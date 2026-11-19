@@ -1,0 +1,21 @@
+@font-face { font-family:'JetBrains Mono'; src:url('fonts/JetBrainsMono-Regular.woff2') format('woff2'); font-display:swap; }
+:root { color-scheme:light; --paper:#fafafa; --ink:#282828; --width:760px; --size:22px; --line:1.7; --gap:.5em; }
+* { box-sizing:border-box; }
+html,body { margin:0; width:100%; height:100%; overflow:hidden; background:var(--paper); color:var(--ink); }
+#viewport { position:relative; height:100%; overflow-y:auto; padding:36px 40px 80px; outline:none; scrollbar-width:none; }
+#viewport::-webkit-scrollbar { display:none; }
+#book { max-width:var(--width); margin:auto; font:var(--size)/var(--line) 'SimSun','Noto Serif CJK SC',serif; overflow-wrap:anywhere; }
+body.sans #book { font-family:'Microsoft YaHei UI','Microsoft YaHei',sans-serif; }
+body.jetbrains #book { font-family:'JetBrains Mono','Microsoft YaHei UI','Microsoft YaHei',monospace; }
+h1 { font-size:1.2em; line-height:1.5; font-weight:600; margin:0 0 1.7em; }
+p { margin:0 0 var(--gap); text-indent:2em; text-align:justify; }
+figure { margin:1em 0; text-align:center; break-inside:avoid; }
+img { max-width:100%; max-height:70vh; object-fit:contain; }
+.chapter + .chapter { margin-top:3em; }
+.speaking { background:rgba(49,93,168,.13); border-radius:3px; }
+body.paged #viewport { overflow:hidden; padding:32px max(24px, calc((100% - var(--width))/2)); }
+body.paged #book { max-width:none; width:100%; height:100%; column-width:var(--column); column-gap:var(--column-gap); column-fill:auto; }
+body.paged .chapter { margin:0; }
+body.paged p { orphans:2; widows:2; }
+@media (max-width:720px) { #viewport { padding-left:24px; padding-right:24px; } body.paged #viewport { padding:24px; } }
+@media (forced-colors:active) { :root { --paper:Canvas; --ink:CanvasText; } .speaking { color:HighlightText; background:Highlight; } }
