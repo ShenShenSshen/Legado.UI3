@@ -32,4 +32,3 @@ dotnet publish .\Legado.UI3.csproj -c Release -p:Platform=x64 -o .\publish\win-x
 
 测试使用临时书库，不接入真实云盘。`-GitHub` 下载上游公开测试文件。`-WebDav` 需要 Node.js 和 `upstream` 目录中的模拟服务器。
 
-`Assets` 中的规则引擎、检测器和解析器源自 [MoRead-Windows](https://github.com/RoutineMiku/MoRead-Windows/tree/ade98202cf77ed05b43788789fa21c2d057d6c13)，其 MIT 许可见 `Assets/UPSTREAM-LICENSE.txt`。维护这些代码时，可将该仓库克隆到 `upstream`，再执行 `tools/Sync-Upstream.ps1`。本项目在 `engine.js` 中维护发现规则，更新引擎时需手动合并。
