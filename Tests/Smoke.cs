@@ -24,6 +24,7 @@ public sealed partial class MainWindow
             foreach (var route in new[] { "search", "explore", "sources", "addons", "settings", "shelf" }) SelectPage(route);
             await Task.Delay(200);
             Check(true, "all navigation pages constructed");
+            await TestUpdateDownloadAsync(Check);
             SelectPage("addons");
             await OpenAddonAsync(new JsonObject
             {
@@ -525,6 +526,43 @@ public sealed partial class MainWindow
             finally { foreach (var extra in extraSources) store.Sources.Remove(extra); }
         }
         finally { slowServer.Stop(); SelectPage("shelf"); store.Sources.Remove(slow); store.Sources.Remove(switched); }
+    }
+
+    private async Task TestUpdateDownloadAsync(Action<bool, string> check)
+    {
+        var package = "portable archive"u8.ToArray();
+        var digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(package));
+        var newer = new Version(Updates.CurrentVersion.Major, Updates.CurrentVersion.Minor, Updates.CurrentVersion.Build + 1);
+        var name = $"Legado.UI3-v{newer}-win-x64.zip";
+        var metadata = JsonNode.Parse($$"""
+            {"tag_name":"v{{newer}}","assets":[{"name":"{{name}}","size":{{package.Length}},
+            "digest":"sha256:{{digest}}","browser_download_url":"{{Updates.ReleasePage}}/download/v{{newer}}/{{name}}"}]}
+            """);
+        var release = Updates.Parse(metadata);
+        check(release.Version == newer && release.Version > Updates.CurrentVersion && release.Size == package.Length,
+            "update metadata accepts the official Windows x64 ZIP and compares versions");
+        metadata!["assets"]![0]!["browser_download_url"] = "https://example.test/update.zip";
+        var rejected = false;
+        try { Updates.Parse(metadata); } catch (InvalidDataException) { rejected = true; }
+        check(rejected, "update metadata rejects an asset outside the official repository");
+        var hosts = new List<string>();
+        using var client = new HttpClient(new UpdateTestHandler(uri =>
+        {
+            hosts.Add(uri.Host);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = new ByteArrayContent(uri.Host == "github.com" ? package : new byte[package.Length]) };
+        }));
+        var path = Path.Combine(store.Root, release.FileName);
+        await Updates.DownloadAsync(release, path, new Progress<string>(), CancellationToken.None, client);
+        check(hosts.SequenceEqual(new[] { "gh-proxy.org", "ghfast.top", "github.com" }) &&
+            (await File.ReadAllBytesAsync(path)).SequenceEqual(package) && !Directory.EnumerateFiles(store.Root, "*.part").Any(),
+            "update download skips corrupted mirrors, verifies the GitHub fallback and removes temporary files");
+    }
+
+    private sealed class UpdateTestHandler(Func<Uri, HttpResponseMessage> handle) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(handle(request.RequestUri!));
     }
 
     private async Task TestNetworkVoicesAsync(string baseUrl, Action<bool, string> check)

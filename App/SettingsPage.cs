@@ -316,8 +316,62 @@ public sealed partial class MainWindow
         ToggleSetting("最小化时保留在托盘", "minimizeToTray", false));
     private void ApplyAppTheme() => root.RequestedTheme = ThemeKey switch { "light" => ElementTheme.Light, "dark" => ElementTheme.Dark, _ => ElementTheme.Default };
 
-    private FrameworkElement AboutSettings() => Ui.Stack(Ui.Text("Legado·UI3", 22), Ui.Text("Windows x64  ·  开源阅读", 13, true),
-        ActionButton("查看上游项目 Legado", async () => { await Launcher.LaunchUriAsync(new("https://github.com/gedoor/legado")); }));
+    private FrameworkElement AboutSettings()
+    {
+        var status = Ui.Text("", 13, true);
+        status.Visibility = Visibility.Collapsed;
+        AutomationProperties.SetLiveSetting(status, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
+        UpdateRelease? release = null;
+        CancellationTokenSource? downloading = null;
+        var cancel = Button("取消下载", () => downloading?.Cancel());
+        cancel.Visibility = Visibility.Collapsed;
+        void Report(string message)
+        {
+            status.Text = message;
+            status.Visibility = Visibility.Visible;
+        }
+        var download = ActionButton("下载 Windows x64", async () =>
+        {
+            if (release is not { } target) return;
+            var path = await SaveFileAsync(Path.GetFileNameWithoutExtension(target.FileName), ".zip");
+            if (path is null) return;
+            using var operation = new CancellationTokenSource();
+            downloading = operation;
+            cancel.Visibility = Visibility.Visible;
+            var progress = new Progress<string>(message => { if (downloading == operation) Report(message); });
+            try
+            {
+                await Updates.DownloadAsync(target, path, progress, operation.Token);
+                Report("下载并校验完成。退出当前应用，解压到新文件夹后运行 Legado.UI3.exe。");
+            }
+            catch (OperationCanceledException)
+            { Report(operation.IsCancellationRequested ? "下载已取消。" : "下载超时，请重试。"); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException)
+            { Report(error.Message); }
+            finally { downloading = null; cancel.Visibility = Visibility.Collapsed; }
+        });
+        download.Visibility = Visibility.Collapsed;
+        var check = ActionButton("检查更新", async () =>
+        {
+            if (downloading is not null) return;
+            download.Visibility = Visibility.Collapsed;
+            Report("正在查询 GitHub 正式版本…");
+            try
+            {
+                release = await Updates.CheckAsync(CancellationToken.None);
+                Report(release.Version > Updates.CurrentVersion ? $"发现新版本 v{release.Version}。" : "当前已是最新版本。");
+                download.Visibility = Visibility.Visible;
+            }
+            catch (OperationCanceledException) { Report("检查更新超时，可重试或打开 GitHub 发布页。"); }
+            catch (Exception error) when (error is HttpRequestException or IOException or InvalidDataException or System.Text.Json.JsonException)
+            { Report($"检查更新失败。{error.Message}"); }
+        });
+        return Ui.Stack(Ui.Text("Legado·UI3", 22), Ui.Text($"版本 {Updates.CurrentVersion} · Windows x64", 13, true),
+            Ui.AdaptiveCommands(check, download, cancel), status,
+            Ui.AdaptiveCommands(
+                ActionButton("GitHub 发布页", async () => { await Launcher.LaunchUriAsync(new(Updates.ReleasePage)); }),
+                ActionButton("查看上游项目 Legado", async () => { await Launcher.LaunchUriAsync(new("https://github.com/gedoor/legado")); })));
+    }
 
     private FrameworkElement ChoiceSetting(string label, string key, string[] names, string[] values, Func<Task>? changed = null, string fallback = "")
     {
