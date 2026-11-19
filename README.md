@@ -1,34 +1,51 @@
-# Legado·UI3
+<p align="center">
+  <img src="Assets/Legado.UI3.png" width="88" alt="Legado.UI3 图标">
+</p>
 
-Windows x64 阅读器，兼容 [Legado（阅读 3.0）](https://github.com/gedoor/legado) 的书源规则。书架、搜索、书源、扩展和设置使用 WinUI 3，阅读排版使用 WebView2。
+<h1 align="center">Legado·UI3</h1>
 
-## 使用
+<p align="center">兼容 Legado 书源规则的 Windows x64 阅读器</p>
 
-从 [GitHub Releases](https://github.com/ShenShenSshen/Legado.UI3/releases/latest) 下载 `Legado.UI3-v版本-win-x64.zip`。完整解压到一个文件夹，再运行 `Legado.UI3.exe`。应用使用系统的 Microsoft Edge WebView2 Runtime。
+<p align="center"><a href="https://github.com/ShenShenSshen/Legado.UI3/releases/latest">下载 Windows x64 便携版</a></p>
 
-启动时会检查正式更新，有新版才提示。「设置 → 关于」也可手动检查。确认后依次尝试 `gh-proxy.org`、`ghfast.top` 和 GitHub 原站，并以 GitHub 发布记录中的 SHA-256 校验。程序会保存进度、准备新版并重启，原入口会启动已确认可用的新版。程序文件按版本存放，书架、书源、阅读进度和音色继续使用原数据目录。由 v1.0.0 升级时，需要先运行支持自动更新的版本一次。
+## 功能
 
-- 在「书架」导入 TXT / EPUB，或拖放文件。阅读器支持滚动续章、翻页、目录、书签、换源和朗读。
-- 阅读背景默认跟随应用主题。深色应用会使用夜间底色。需要独立设置时，可在「阅读设置 → 排版 → 背景」选择纸白、米黄、浅绿或夜间。
-- 在「设置 → 朗读 → 导入网络语音」选择 Legado 的 `httpTTS.json`，或粘贴 HTTPS 接口，例如 `https://your-server.example/tts?text={{speakText}}`。导入后从音色列表选择并试听。配置只保存在本机，选中网络音色并朗读后，对应服务会收到正文。
-- 在「搜索」切换到「网页」可搜索书名或输入网址。浏览页面时，用「识别书籍」提取目录或书籍链接。
-- 「设置」的各项内容按小标题在一页展开。「搜索与网络」中的两种检索范围均可选择「全部」，覆盖已启用且配置了搜索规则的书源。
-- 在侧栏「浏览」筛选并切换书源，选择该源提供的分类或点击榜、人气榜等入口。点击书籍可预览目录、试读或加入书架；支持分页的书单可翻页。「书源」的编辑页可切换是否在浏览页显示。
-- 在「书源 → 导入 → 网络链接」粘贴 GitHub 文件页、Raw 或 HTTPS JSON 链接。预览默认勾选新增项。勾选重复项并开启更新时，保留该书源的启用状态和 ID。
-- 在「书源 → 批量选择」勾选书源或全选筛选结果。删除时会显示所选数量和受影响的书籍数量。已缓存章节仍可读取。
-- 迁移旧版时，在原应用导出包含本地书的完整备份，再到新版「设置 → 数据与备份 → 从备份恢复」。支持旧版和 Legado 备份，书签和进度随备份迁移。旧阅读历史和统计字段会被忽略。
+- **书架与阅读** — 导入或拖放 TXT、EPUB，按分组管理书籍。支持翻页、连续滚动、目录、书签和进度恢复，可调节字体、行距、正文宽度和夜间底色。
+- **搜索与发现** — 按书名或作者检索启用的书源，可同时搜索全部书源。切换书源浏览分类、榜单和书单，预览目录或试读后加入书架。
+- **书源管理** — 导入 Legado 书源 JSON、本地文件或 GitHub 网络链接。支持分组、启停、检测、批量选择和删除。
+- **朗读** — 选择 Windows 系统音色，或导入 Legado TTS 配置和网络接口。支持试听、调节语速、读完续章和批量删除网络音色。
+- **备份与更新** — 支持本地备份恢复及 WebDAV 同步。启动时检查正式版，有新版才提示。确认后通过国内加速线路或 GitHub 下载，校验后保存进度并重启。
+
+## 界面截图
+
+截图中的书籍、正文和书源均为演示数据。
+
+### 书架
+
+![书架界面，展示封面网格、分组和继续阅读入口](docs/screenshots/bookshelf.png)
+
+### 阅读器
+
+![阅读界面，展示正文排版、目录、书签和朗读入口](docs/screenshots/reader.png)
+
+### 书源管理
+
+![书源管理界面，展示导入、筛选、检测和批量选择](docs/screenshots/sources.png)
+
+## 下载与运行
+
+1. 从 [GitHub Releases](https://github.com/ShenShenSshen/Legado.UI3/releases/latest) 下载 Windows x64 ZIP。
+2. 完整解压到一个文件夹，运行 `Legado.UI3.exe`。应用使用系统的 Microsoft Edge WebView2 Runtime。
+
+「设置 → 关于」可以手动检查更新。首次使用自动更新前，请先解压运行 v1.0.1 或更新的版本。书架、书源、进度和音色保存在本机数据目录。
 
 ## 构建与测试
 
-网络朗读支持返回音频的 GET / POST 接口，可带请求头、本地 HTTP 服务，以及常用 Legado 文本和语速占位符。需要登录脚本、自定义 JavaScript 或返回 JSON 包装音频的配置会提示不兼容。
-
-使用 .NET 10 SDK 在 Windows x64 上运行：
+在 Windows x64 上使用 .NET 10 SDK：
 
 ```powershell
 dotnet publish .\Legado.UI3.csproj -c Release -p:Platform=x64 -o .\publish\win-x64
 .\Tests\Run-Smoke.ps1
-.\Tests\Run-Smoke.ps1 -GitHub -WebDav
 ```
 
-测试使用临时书库，不接入真实云盘。`-GitHub` 下载上游公开测试文件。`-WebDav` 需要 Node.js 和 `upstream` 目录中的模拟服务器。
-
+测试使用独立的临时数据目录。第三方资源许可随资源一并提供，见 [Assets](Assets/)。
