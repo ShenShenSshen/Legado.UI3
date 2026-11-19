@@ -6,7 +6,7 @@
 
 <p align="center">兼容 Legado 书源规则的 Windows x64 阅读器</p>
 
-<p align="center"><a href="https://github.com/ShenShenSshen/Legado.UI3/releases/latest">下载 Windows x64 便携版</a></p>
+<p align="center"><a href="https://github.com/ShenShenSshen/Legado.UI3/releases/latest">下载 Windows x64 安装版或便携版</a></p>
 
 ## 功能
 
@@ -34,8 +34,12 @@
 
 ## 下载与运行
 
-1. 从 [GitHub Releases](https://github.com/ShenShenSshen/Legado.UI3/releases/latest) 下载 Windows x64 ZIP。
-2. 完整解压到一个文件夹，运行 `Legado.UI3.exe`。应用使用系统的 Microsoft Edge WebView2 Runtime。
+从 [GitHub Releases](https://github.com/ShenShenSshen/Legado.UI3/releases/latest) 选择 Windows x64 版本：
+
+- **安装版** `*-win-x64-Setup.exe`。运行安装程序，完成后从开始菜单打开 Legado.UI3。可以选择创建桌面快捷方式。
+- **便携版** `*-win-x64.zip`。完整解压到一个文件夹，运行 `Legado.UI3.exe`。
+
+应用使用系统的 Microsoft Edge WebView2 Runtime。卸载安装版时会保留本机的书架、书源、阅读进度和音色。
 
 「设置 → 关于」可以手动检查更新。首次使用自动更新前，请先解压运行 v1.0.1 或更新的版本。书架、书源、进度和音色保存在本机数据目录。
 
@@ -49,3 +53,5 @@ dotnet publish .\Legado.UI3.csproj -c Release -p:Platform=x64 -o .\publish\win-x
 ```
 
 测试使用独立的临时数据目录。第三方资源许可随资源一并提供，见 [Assets](Assets/)。
+
+生成安装版时，先执行上面的发布命令，再使用 Inno Setup 的 `ISCC.exe /DAppVersion=1.0.1 .\tools\Installer.iss` 编译安装器。
