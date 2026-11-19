@@ -32,7 +32,7 @@ public sealed partial class MainWindow : Window
     private bool closing;
     private AppWindowPresenter? windowedPresenter;
 
-    public MainWindow()
+    public MainWindow(bool finishUpdate = false)
     {
         Title = "Legado·UI3";
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "Legado.UI3.ico"));
@@ -79,10 +79,21 @@ public sealed partial class MainWindow : Window
         {
             ApplyCaptionColors();
             initialization = Task.WhenAll(engine.InitializeAsync(), parser.InitializeAsync());
-            _ = RunAsync(async () => { await initialization; if (store.LoadWarning is { } warning) ShowNotice(warning, true); });
+            _ = RunAsync(async () =>
+            {
+                await initialization;
+                if (store.LoadWarning is { } warning) ShowNotice(warning, true);
+                else if (finishUpdate)
+                {
+                    UpdateInstall.Activate(store.Root, Environment.ProcessPath!);
+                    ShowNotice($"已更新至 v{Updates.CurrentVersion}。");
+                }
+            });
 #if LEGADO_UI3_SELF_TEST
             _ = RunSelfTestIfRequestedAsync();
+            if (File.Exists(Path.Combine(store.Root, ".smoke-test"))) return;
 #endif
+            if (!finishUpdate) _ = CheckForUpdatesAsync(manual: false);
         };
         AddShortcut(VirtualKey.F, VirtualKeyModifiers.Control, () => { if (readerBook is null) { focusSearchOnOpen = true; SelectPage("search"); } });
         AddShortcut(VirtualKey.O, VirtualKeyModifiers.Control, () => _ = RunAsync(ImportBooksAsync));
@@ -156,11 +167,11 @@ public sealed partial class MainWindow : Window
         notice.Severity = error ? InfoBarSeverity.Error : InfoBarSeverity.Informational;
         notice.Message = message; notice.IsOpen = true;
     }
-    private async Task ExitAsync()
+    private async Task ExitAsync(Action? afterSave = null)
     {
         if (closing) return;
         closing = true;
-        try { await FlushReadingProgressAsync(); await store.SaveAsync(); }
+        try { await FlushReadingProgressAsync(); await store.SaveAsync(); afterSave?.Invoke(); }
         catch (Exception e) { closing = false; ReportError(e); return; }
         Close();
     }

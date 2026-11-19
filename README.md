@@ -6,7 +6,7 @@ Windows x64 阅读器，兼容 [Legado（阅读 3.0）](https://github.com/gedoo
 
 从 [GitHub Releases](https://github.com/ShenShenSshen/Legado.UI3/releases/latest) 下载 `Legado.UI3-v版本-win-x64.zip`。完整解压到一个文件夹，再运行 `Legado.UI3.exe`。应用使用系统的 Microsoft Edge WebView2 Runtime。
 
-「设置 → 关于」显示当前版本，可检查正式发布并下载 ZIP。下载依次尝试 `gh-proxy.org`、`ghfast.top` 和 GitHub 原站，并以 GitHub 发布记录中的 SHA-256 校验文件。更新时退出当前应用，把新版解压到新文件夹后运行，书架等数据仍从本机数据目录读取。
+启动时会检查正式更新，有新版才提示。「设置 → 关于」也可手动检查。确认后依次尝试 `gh-proxy.org`、`ghfast.top` 和 GitHub 原站，并以 GitHub 发布记录中的 SHA-256 校验。程序会保存进度、准备新版并重启，原入口会启动已确认可用的新版。程序文件按版本存放，书架、书源、阅读进度和音色继续使用原数据目录。由 v1.0.0 升级时，需要先运行支持自动更新的版本一次。
 
 - 在「书架」导入 TXT / EPUB，或拖放文件。阅读器支持滚动续章、翻页、目录、书签、换源和朗读。
 - 阅读背景默认跟随应用主题。深色应用会使用夜间底色。需要独立设置时，可在「阅读设置 → 排版 → 背景」选择纸白、米黄、浅绿或夜间。

@@ -1,4 +1,6 @@
 using System.Net;
+using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.UI.Xaml.Controls;
@@ -557,6 +559,34 @@ public sealed partial class MainWindow
         check(hosts.SequenceEqual(new[] { "gh-proxy.org", "ghfast.top", "github.com" }) &&
             (await File.ReadAllBytesAsync(path)).SequenceEqual(package) && !Directory.EnumerateFiles(store.Root, "*.part").Any(),
             "update download skips corrupted mirrors, verifies the GitHub fallback and removes temporary files");
+
+        var fixtureRoot = Path.Combine(store.Root, "update-fixture");
+        Directory.CreateDirectory(fixtureRoot);
+        var marker = Path.Combine(fixtureRoot, "updates", "active.txt");
+        async Task<string> StageFixtureAsync(bool traversal)
+        {
+            using var contents = new MemoryStream();
+            using (var zip = new ZipArchive(contents, ZipArchiveMode.Create, leaveOpen: true))
+            {
+                zip.CreateEntryFromFile(Environment.ProcessPath!, "Legado.UI3.exe");
+                foreach (var file in new[] { "App.xbf", "Legado.UI3.pri", "Legado.UI3.dll", "Assets/Legado.UI3.ico" })
+                    zip.CreateEntry(file);
+                if (traversal) zip.CreateEntry("../../escaped.txt");
+            }
+            var bytes = contents.ToArray();
+            using var fixtureClient = new HttpClient(new UpdateTestHandler(_ => new(HttpStatusCode.OK) { Content = new ByteArrayContent(bytes) }));
+            var fixture = release with { Version = Updates.CurrentVersion, Size = bytes.Length, Sha256 = Convert.ToHexString(SHA256.HashData(bytes)) };
+            return await UpdateInstall.StageAsync(fixtureRoot, fixture, new Progress<string>(), CancellationToken.None, fixtureClient);
+        }
+        var staged = await StageFixtureAsync(traversal: false);
+        check(File.Exists(staged) && !File.Exists(marker) && !Directory.EnumerateFiles(Path.GetDirectoryName(marker)!, "*.zip").Any(),
+            "update staging verifies and extracts the package without activating it");
+        UpdateInstall.Activate(fixtureRoot, staged);
+        var active = await File.ReadAllTextAsync(marker);
+        rejected = false;
+        try { await StageFixtureAsync(traversal: true); } catch (IOException) { rejected = true; }
+        check(rejected && await File.ReadAllTextAsync(marker) == active && !File.Exists(Path.Combine(fixtureRoot, "escaped.txt")),
+            "a traversal package is rejected and leaves the last active version intact");
     }
 
     private sealed class UpdateTestHandler(Func<Uri, HttpResponseMessage> handle) : HttpMessageHandler

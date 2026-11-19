@@ -10,11 +10,14 @@ public static class Program
     {
         try
         {
+            var finishUpdate = args.FirstOrDefault() == Core.UpdateInstall.Handoff;
+            if (finishUpdate && !Core.UpdateInstall.WaitForPrevious(args)) return;
+            if (!finishUpdate && Core.UpdateInstall.RedirectToActive(Core.AppStore.DefaultRoot(), args)) return;
             WinRT.ComWrappersSupport.InitializeComWrappers();
             Application.Start(_ =>
             {
                 SynchronizationContext.SetSynchronizationContext(new DispatcherQueueSynchronizationContext(DispatcherQueue.GetForCurrentThread()));
-                new ReaderApplication();
+                new ReaderApplication(finishUpdate);
             });
         }
         catch (Exception e) { LogStartup(e); throw; }
@@ -35,8 +38,10 @@ public static class Program
 public sealed partial class ReaderApplication : Application
 {
     private MainWindow? window;
-    public ReaderApplication()
+    private readonly bool finishUpdate;
+    public ReaderApplication(bool finishUpdate)
     {
+        this.finishUpdate = finishUpdate;
         UnhandledException += (_, e) =>
         {
             if (window is null) { Program.LogStartup(e.Exception); return; }
@@ -47,7 +52,7 @@ public sealed partial class ReaderApplication : Application
     }
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
-        try { window = new MainWindow(); window.Activate(); }
+        try { window = new MainWindow(finishUpdate); window.Activate(); }
         catch (Exception e) { Program.LogStartup(e); Exit(); }
     }
 }
