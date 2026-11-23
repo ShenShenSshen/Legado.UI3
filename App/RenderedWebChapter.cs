@@ -7,16 +7,52 @@ namespace Legado.UI3;
 public sealed partial class MainWindow
 {
     private readonly SemaphoreSlim webChapterNavigation = new(1);
+    private readonly Dictionary<(string Url, string Selector), JsonObject> renderedChapters = [];
+    private ((string Url, string Selector) Key, Task<JsonObject> Task, CancellationTokenSource Cancellation)? pendingWebChapter;
     private string? webChapterScript;
 
-    private async Task<JsonObject> ReadRenderedWebChapterAsync(Uri url, string selector, int session)
+    private void ResetRenderedChapters()
     {
-        await webChapterNavigation.WaitAsync();
+        pendingWebChapter?.Cancellation.Cancel();
+        pendingWebChapter = null;
+        renderedChapters.Clear();
+    }
+
+    private async Task<JsonObject> GetRenderedChapterAsync(Uri url, string selector)
+    {
+        var key = (url.GetLeftPart(UriPartial.Query), selector);
+        if (renderedChapters.TryGetValue(key, out var cached)) return cached;
+        if (pendingWebChapter is { } previous)
+        {
+            if (previous.Key == key) return await previous.Task;
+            previous.Cancellation.Cancel();
+        }
+        using var cancellation = new CancellationTokenSource();
+        var task = ReadRenderedWebChapterAsync(url, selector, cancellation.Token);
+        pendingWebChapter = (key, task, cancellation);
+        try
+        {
+            var rendered = await task;
+            cancellation.Token.ThrowIfCancellationRequested();
+            if (renderedChapters.Count >= 6) renderedChapters.Remove(renderedChapters.Keys.First());
+            renderedChapters[key] = rendered;
+            return rendered;
+        }
+        finally
+        {
+            if (pendingWebChapter?.Cancellation == cancellation) pendingWebChapter = null;
+        }
+    }
+
+    private async Task<JsonObject> ReadRenderedWebChapterAsync(Uri url, string selector, CancellationToken token)
+    {
+        await webChapterNavigation.WaitAsync(token);
         try
         {
             void CheckSession()
             {
-                if (closing || readerSession != session) throw new OperationCanceledException();
+                token.ThrowIfCancellationRequested();
+                if (closing) throw new OperationCanceledException();
             }
             CheckSession();
             var view = await PrepareWebPageAsync(forReading: true);
@@ -37,7 +73,7 @@ public sealed partial class MainWindow
             try
             {
                 core.Navigate(url.AbsoluteUri);
-                if (!await completed.Task.WaitAsync(TimeSpan.FromSeconds(15))) throw new IOException("原网页未能加载");
+                if (!await completed.Task.WaitAsync(TimeSpan.FromSeconds(15), token)) throw new IOException("原网页未能加载");
             }
             catch (TimeoutException) { throw new IOException("原网页加载超时"); }
             finally
@@ -52,7 +88,7 @@ public sealed partial class MainWindow
             {
                 CheckSession();
                 if (!SameWebChapter(core.Source, url)) break;
-                var raw = await view.ExecuteScriptAsync(script).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+                var raw = await view.ExecuteScriptAsync(script).AsTask().WaitAsync(TimeSpan.FromSeconds(5), token);
                 CheckSession();
                 if (!SameWebChapter(core.Source, url)) break;
                 if (JsonNode.Parse(raw) is JsonObject result)
@@ -60,7 +96,7 @@ public sealed partial class MainWindow
                     if (result.B("blocked")) throw new IOException("网页需要登录、订阅或验证");
                     if (result["paras"] is JsonArray { Count: > 0 }) return result;
                 }
-                await Task.Delay(250);
+                await Task.Delay(250, token);
             }
             throw new IOException("原网页暂未显示可读正文");
         }

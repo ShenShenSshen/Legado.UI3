@@ -104,6 +104,7 @@ public sealed partial class MainWindow
         if (readerBook is not null && !ReferenceEquals(readerBook, book))
             await FlushReadingProgressAsync();
         StopSpeech();
+        ResetRenderedChapters();
         var session = ++readerSession;
         readingToken = "";
         readerBook = book;
@@ -224,7 +225,7 @@ public sealed partial class MainWindow
             try
             {
                 var selector = book["webRule"]?["content"].S("content") ?? "";
-                var rendered = await ReadRenderedWebChapterAsync(url, selector, session);
+                var rendered = await GetRenderedChapterAsync(url, selector);
                 if (session != readerSession) throw new OperationCanceledException();
                 return ((JsonArray)rendered["paras"]!, UpdateRenderedChapter(book, chapter, index, url, rendered));
             }
@@ -296,7 +297,7 @@ public sealed partial class MainWindow
                 { readingIndex = index; readingPercent = percent; progressDirty = true; }
                 UpdateReaderControls(message.I("page"), message.I("pages"));
                 break;
-            case "needNext": _ = RunAsync(() => AppendChapterAsync(message.I("ci") + 1)); break;
+            case "needNext" when !appending && !prefetchFailed: _ = RunAsync(() => AppendChapterAsync(message.I("ci") + 1)); break;
             case "retryNext": prefetchFailed = false; _ = RunAsync(() => AppendChapterAsync(message.I("ci") + 1)); break;
             case "chapter" when !readerBusy: _ = RunAsync(() => ReadChapterAsync(readingIndex + Math.Sign(message.I("direction")))); break;
             case "escape": HandleReaderEscape(); break;
@@ -318,12 +319,12 @@ public sealed partial class MainWindow
         {
             var chapter = readerChapters[next];
             var (text, index) = await LoadChapterForDisplayAsync(book, next, chapter, session);
-            if (session == readerSession)
+            if (session == readerSession && !closing)
                 await ReaderScriptAsync("append", ChapterPayload(index, chapter, text));
         }
         catch (Exception)
         {
-            if (session != readerSession) return;
+            if (session != readerSession || closing) return;
             prefetchFailed = true;
             await ReaderScriptAsync("showNextRetry");
         }
@@ -467,6 +468,7 @@ public sealed partial class MainWindow
         StopSpeech();
         await FlushReadingProgressAsync();
         ++readerSession;
+        ResetRenderedChapters();
         readingToken = "";
         readerBook = null;
         readerBusy = false;
@@ -486,7 +488,8 @@ public sealed partial class MainWindow
         ["readingWidth"] = Math.Clamp(store.Settings.D("readingWidth", 760), 420, 1400),
         ["fontFamily"] = store.Settings.S("fontFamily", "serif"),
         ["theme"] = ResolveReaderTheme(),
-        ["pageMode"] = store.Settings.S("pageMode", "scroll")
+        ["pageMode"] = store.Settings.S("pageMode", "scroll"),
+        ["webChapterPrefetch"] = readerBook?.S("kind") is "web" or "comic"
     };
     private string ResolveReaderTheme() => store.Settings.S("theme", "auto") switch
     {

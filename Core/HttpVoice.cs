@@ -51,7 +51,17 @@ public sealed record HttpVoice(string Name, string Url, string Method, JsonNode?
             root = new JsonObject { ["name"] = uri.Host, ["url"] = input };
         }
         if (root is JsonObject wrapper && wrapper["httpTTS"] is JsonArray wrapped) root = wrapped;
-        IEnumerable<JsonNode?> entries = root is JsonArray array ? array : new[] { root };
+        return ParseEntries(root is JsonArray array ? array : new[] { root });
+    }
+
+    internal JsonObject BackupEntry() => new()
+    {
+        ["name"] = Name, ["url"] = Url, ["method"] = Method, ["body"] = Body?.DeepClone(),
+        ["headers"] = JsonSerializer.SerializeToNode(Headers), ["contentType"] = ContentType
+    };
+
+    internal static (List<HttpVoice> Voices, List<string> Rejected) ParseEntries(IEnumerable<JsonNode?> entries)
+    {
         var voices = new List<HttpVoice>();
         var rejected = new List<string>();
         foreach (var entry in entries)
@@ -227,7 +237,34 @@ public sealed class HttpVoiceLibrary(string root)
         : [];
 
     public Task<bool> MergeAsync(IReadOnlyList<HttpVoice> imported) =>
-        UpdateAsync(voices => voices.Concat(imported).GroupBy(voice => voice.Id).Select(group => group.Last()).ToList());
+        UpdateAsync(voices => Merge(voices, imported));
+
+    private static List<HttpVoice> Merge(List<HttpVoice> existing, IReadOnlyList<HttpVoice> imported) =>
+        existing.Concat(imported).GroupBy(voice => voice.Id).Select(group => group.Last()).ToList();
+
+    internal async Task RestoreAsync(IReadOnlyList<HttpVoice> imported, Func<Task> saveState)
+    {
+        await changes.WaitAsync();
+        try
+        {
+            var existed = File.Exists(FilePath);
+            var original = Load();
+            // Save additions before selecting them. A restart between writes can still use the previous selection.
+            await SaveAsync(Merge(original, imported));
+            try { await saveState(); }
+            catch (Exception error)
+            {
+                try
+                {
+                    if (existed) await SaveAsync(original);
+                    else File.Delete(FilePath);
+                }
+                catch (Exception rollbackError) { throw new AggregateException("备份恢复失败，音色回退时也遇到错误。", error, rollbackError); }
+                throw;
+            }
+        }
+        finally { changes.Release(); }
+    }
 
     public async Task<int> RemoveAsync(IReadOnlySet<string> ids)
     {

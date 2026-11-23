@@ -5,6 +5,7 @@
   const chapters = [];
   let mode = 'scroll', page = 0, pageCount = 1, pageStride = 0, scheduled = false;
   let token = '', lastPercent = 0, restoreFrame = 0;
+  let prefetchScreens = 2.25;
   const post = value => chrome.webview.postMessage({ ...value, token });
   const isImage = value => /^(data:image\/(?:png|jpeg|jpg|gif|webp|avif|bmp|svg\+xml);|https?:\/\/)/i.test(value);
   const clamp = value => Math.max(0, Math.min(1, value || 0));
@@ -60,7 +61,7 @@
     }
     lastPercent = clamp((viewport.scrollTop - scrollOrigin(active)) / scrollRange(active));
     post({ type:'progress', ci, pct:lastPercent });
-    if (requestNext && viewport.scrollTop + viewport.clientHeight * 2.25 >= viewport.scrollHeight)
+    if (requestNext && viewport.scrollTop + viewport.clientHeight * prefetchScreens >= viewport.scrollHeight)
       post({ type:'needNext', ci:chapters.at(-1).ci });
   }
   function drawPage() {
@@ -99,6 +100,7 @@
   }
   function applySettings(settings) {
     mode = settings.pageMode || 'scroll';
+    prefetchScreens = settings.webChapterPrefetch ? 3.5 : 2.25;
     document.body.classList.toggle('paged', mode === 'paged');
     document.body.classList.toggle('sans', settings.fontFamily === 'sans');
     document.body.classList.toggle('jetbrains', settings.fontFamily === 'jetbrains');

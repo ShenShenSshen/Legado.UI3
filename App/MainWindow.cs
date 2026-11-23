@@ -68,7 +68,7 @@ public sealed partial class MainWindow : Window
         engine = new EngineHost(store.Root);
         parser = new EngineHost(store.Root, parser: true);
         local = new(store, (operation, payload) => parser.RunAsync(operation, payload));
-        voiceLibrary = new(store.Root);
+        voiceLibrary = store.Voices;
         Grid.SetRow(engine.View, 2); engine.View.HorizontalAlignment = HorizontalAlignment.Left; engine.View.VerticalAlignment = VerticalAlignment.Bottom; root.Children.Add(engine.View);
         Grid.SetRow(parser.View, 2); parser.View.HorizontalAlignment = HorizontalAlignment.Left; parser.View.VerticalAlignment = VerticalAlignment.Bottom; root.Children.Add(parser.View);
         Content = root;
@@ -117,7 +117,7 @@ public sealed partial class MainWindow : Window
             if (!store.Settings.B("closeToTray") || !tray.Hide()) _ = ExitAsync();
             else _ = RunAsync(FlushReadingProgressAsync);
         };
-        Closed += (_, _) => { root.ActualThemeChanged -= OnWindowThemeChanged; autoBackupTimer.Stop(); progressTimer.Stop(); StopSpeech(); tray.Dispose(); readerWeb?.Close(); webPageView?.Close(); engine.Dispose(); parser.Dispose(); };
+        Closed += (_, _) => { root.ActualThemeChanged -= OnWindowThemeChanged; autoBackupTimer.Stop(); progressTimer.Stop(); StopSpeech(); ResetRenderedChapters(); tray.Dispose(); readerWeb?.Close(); webPageView?.Close(); engine.Dispose(); parser.Dispose(); };
         navigation.SelectedItem = navigation.MenuItems[0];
     }
 

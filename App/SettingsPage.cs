@@ -379,7 +379,8 @@ public sealed partial class MainWindow
     private async Task ExportBackupAsync()
     {
         var include = new CheckBox { Content = "包含本地书原文件", IsChecked = true };
-        if (await DialogAsync("导出备份", include, "选择保存位置") != ContentDialogResult.Primary) return;
+        var content = Ui.Stack(include, Ui.Text("备份包含网络音色、当前选择和接口凭据，请妥善保存。", 13, true));
+        if (await DialogAsync("导出备份", content, "选择保存位置") != ContentDialogResult.Primary) return;
         var path = await SaveFileAsync("Legado.UI3-" + DateTime.Now.ToString("yyyyMMdd"), ".zip");
         if (path is not null) { await Backup.ExportAsync(store, path, include.IsChecked == true); ShowNotice("备份已导出"); }
     }
@@ -387,11 +388,13 @@ public sealed partial class MainWindow
     {
         var preview = await Backup.ReadAsync(path);
         var summary = $"书籍 {preview.State["books"]!.AsArray().Count} 本，书源 {preview.State["sources"]!.AsArray().Count} 个，书签 {preview.State["bookmarks"]!.AsArray().Count} 条。";
+        if (preview.Voices is { } voices) summary += $"\n合并 {voices.Count} 个网络音色，并恢复备份中的音色选择。";
         if (preview.Skipped > 0) summary += $"\n有 {preview.Skipped} 本手机本地书需重新导入原文件。";
         var result = await DialogAsync("恢复备份", Ui.Text(summary), "合并", "替换当前数据");
         if (result == ContentDialogResult.None) return;
         var replace = result == ContentDialogResult.Secondary;
         if (replace && !await ConfirmAsync("替换当前数据", "用此备份替换当前书架、书源和设置？", "替换")) return;
+        if (preview.Voices is not null) StopSpeech();
         await Backup.ApplyAsync(store, preview, replace);
         ApplyAppTheme();
         SelectPage("shelf");
@@ -418,7 +421,9 @@ public sealed partial class MainWindow
             ActionButton("测试连接", async () => { await SaveConfig(); using var dav = Dav(); await dav.TestAsync(); ShowNotice("WebDAV 已连接"); }),
             ActionButton("立即备份", async () => { await SaveConfig(); await CloudBackupAsync(true); ShowNotice("云端备份已上传"); }, true),
             ActionButton("云端备份", async () => { await SaveConfig(); await CloudListAsync(); }));
-        var body = Ui.Stack(address, user, password, folder, actions,
+        var body = Ui.Stack(address, user, password, folder,
+            ToggleSetting("云备份包含网络音色", "includeVoices", false, preferences),
+            Ui.Text("开启后，手动和自动备份都会上传网络音色、当前选择及接口凭据。", 13, true), actions,
             ToggleSetting("自动备份", "autoBackup", false, preferences),
             SliderSetting("备份间隔（小时）", "intervalHours", 6, 72, 6, 24, data: preferences),
             SliderSetting("保留最近备份份数", "keep", 1, 30, 1, 10, data: preferences));
@@ -434,7 +439,7 @@ public sealed partial class MainWindow
             using var dav = Dav();
             const string prefix = "legado-ui3-";
             var name = prefix + DateTime.UtcNow.ToString("yyyyMMdd-HHmmss") + ".zip";
-            await Backup.ExportAsync(store, temp, include);
+            await Backup.ExportAsync(store, temp, include, includeVoices: store.Settings["webdav"].B("includeVoices"));
             await dav.UploadAsync(name, temp);
             var config = store.Settings["webdav"]!.AsObject();
             config["lastBackupAt"] = J.Now;

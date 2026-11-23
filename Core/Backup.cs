@@ -3,7 +3,10 @@ using System.Text.Json.Nodes;
 
 namespace Legado.UI3.Core;
 
-public sealed record BackupPreview(JsonObject State, Dictionary<string, byte[]> Files, int Skipped = 0);
+public sealed record BackupPreview(JsonObject State, Dictionary<string, byte[]> Files, int Skipped = 0)
+{
+    public IReadOnlyList<HttpVoice>? Voices { get; init; }
+}
 
 public static class Backup
 {
@@ -81,7 +84,15 @@ public static class Backup
                     var book = state["books"].Objects().FirstOrDefault(b => b.S("id") == id);
                     if (book is not null && value is JsonValue v && v.TryGetValue<string>(out var base64)) files[book.S("localFile")] = Convert.FromBase64String(base64);
                 }
-            return new(AppStore.Prepare(state), files);
+            IReadOnlyList<HttpVoice>? voices = null;
+            if (root.S("app") == "legado-ui3" && root.ContainsKey("networkVoices"))
+            {
+                if (root["networkVoices"] is not JsonArray entries) throw new InvalidDataException("备份中的网络音色格式错误。");
+                var (parsed, invalid) = HttpVoice.ParseEntries(entries);
+                if (invalid.Count > 0) throw new InvalidDataException($"备份中有 {invalid.Count} 个网络音色配置无效，无法恢复。");
+                voices = parsed;
+            }
+            return new(AppStore.Prepare(state), files) { Voices = voices };
         }
         if (node is JsonObject legacy && legacy["bookshelf"] is JsonArray)
             return FromLegado(legacy["bookSource"] ?? legacy["sources"], legacy["bookshelf"], legacy["bookmark"], legacy["bookGroup"]);
@@ -179,7 +190,13 @@ public static class Backup
                 written.Add(destination);
                 await file.WriteAsync(bytes);
             }
-            await store.RestoreAsync(next, replace);
+            var selection = preview.Voices is null ? null : next["settings"]?["tts"].S("voiceURI");
+            if (selection?.StartsWith("http:", StringComparison.Ordinal) == true &&
+                !preview.Voices!.Any(voice => voice.Id == selection)) selection = "";
+            if (preview.Voices is { Count: > 0 } voices)
+                await store.Voices.RestoreAsync(voices, () => store.RestoreAsync(next, replace, selection));
+            else
+                await store.RestoreAsync(next, replace, selection);
         }
         catch
         {
@@ -188,9 +205,12 @@ public static class Backup
         }
     }
 
-    public static async Task ExportAsync(AppStore store, string path, bool includeFiles)
+    public static async Task ExportAsync(AppStore store, string path, bool includeFiles, bool includeVoices = true)
     {
         var state = store.State.Copy();
+        var voices = includeVoices ? J.Array(store.Voices.Load().Select(voice => voice.BackupEntry())) : null;
+        if (!includeVoices) state["settings"]!["tts"]!.AsObject().Remove("voiceURI");
+        state["settings"]!["webdav"]!.AsObject().Remove("includeVoices");
         var books = state["books"].Objects().ToArray();
         var sources = state["sources"].Objects().ToArray();
         var groups = state["groups"].Objects().ToArray();
@@ -218,7 +238,10 @@ public static class Backup
                         }
                         fileMap[book.S("id")] = new JsonObject { ["path"] = zipPath, ["ext"] = Path.GetExtension(source), ["localFile"] = relative };
                     }
-                await Write("legado-ui3.json", new JsonObject { ["app"] = "legado-ui3", ["schema"] = 2, ["exportedAt"] = DateTimeOffset.UtcNow.ToString("O"), ["data"] = state, ["fileMap"] = fileMap }.ToJsonString(J.Pretty));
+                var manifest = new JsonObject { ["app"] = "legado-ui3", ["schema"] = 3,
+                    ["exportedAt"] = DateTimeOffset.UtcNow.ToString("O"), ["data"] = state, ["fileMap"] = fileMap };
+                if (voices is not null) manifest["networkVoices"] = voices;
+                await Write("legado-ui3.json", manifest.ToJsonString(J.Pretty));
                 await Write("bookSource.json", J.Array(sources.Select(SourceImport.ToLegado)).ToJsonString(J.Pretty));
                 var shelf = books.Select(book =>
                 {

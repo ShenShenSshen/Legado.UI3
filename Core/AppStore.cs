@@ -6,6 +6,7 @@ public sealed class AppStore
 {
     private readonly SemaphoreSlim writes = new(1);
     public string Root { get; }
+    internal HttpVoiceLibrary Voices { get; }
     public JsonObject State { get; private set; }
     public JsonArray Books => (JsonArray)State["books"]!;
     public JsonArray Sources => (JsonArray)State["sources"]!;
@@ -16,6 +17,7 @@ public sealed class AppStore
     public AppStore(string? root = null)
     {
         Root = root ?? DefaultRoot();
+        Voices = new(Root);
         Directory.CreateDirectory(Root);
         State = Defaults();
         var file = Path.Combine(Root, "data.json");
@@ -90,7 +92,7 @@ public sealed class AppStore
         finally { if (File.Exists(temp)) File.Delete(temp); }
     }
 
-    public async Task RestoreAsync(JsonObject incoming, bool replace)
+    public async Task RestoreAsync(JsonObject incoming, bool replace, string? voiceSelection = null)
     {
         var prepared = Prepare(incoming);
         await writes.WaitAsync();
@@ -117,6 +119,9 @@ public sealed class AppStore
                     MergeById(next[key]!.AsArray(), prepared[key].Objects());
                 foreach (var (key, value) in prepared["progress"]!.AsObject()) next["progress"]![key] = value?.DeepClone();
             }
+            // A backup without audio must leave the current local selection and cloud consent intact.
+            next["settings"]!["tts"]!["voiceURI"] = voiceSelection ?? Settings["tts"].S("voiceURI");
+            next["settings"]!["webdav"]!["includeVoices"] = Settings["webdav"].B("includeVoices");
             await PersistAsync(next);
             State = next;
         }

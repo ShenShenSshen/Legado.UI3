@@ -164,7 +164,8 @@ public sealed partial class MainWindow
             server.Start();
             using var cancelServer = new CancellationTokenSource();
             var baseUrl = "http://127.0.0.1:" + ((IPEndPoint)server.LocalEndpoint).Port;
-            var serverTask = ServeSmokePagesAsync(server, cancelServer.Token);
+            var webVisits = new System.Collections.Concurrent.ConcurrentDictionary<int, int>();
+            var serverTask = ServeSmokePagesAsync(server, cancelServer.Token, webVisits);
             try
             {
                 await TestNetworkVoicesAsync(baseUrl, Check);
@@ -235,10 +236,13 @@ public sealed partial class MainWindow
                 }
                 await CheckDynamicChapterAsync(68);
                 Check(readerPrevious!.IsEnabled && readerNext!.IsEnabled, "dynamic chapter discovers both adjacent chapters without an imported directory");
+                var firstVisits = webVisits.GetValueOrDefault(68);
                 await StepReaderAsync(-1);
                 await CheckDynamicChapterAsync(67);
                 await StepReaderAsync(1);
                 await CheckDynamicChapterAsync(68);
+                Check(firstVisits > 0 && webVisits.GetValueOrDefault(68) == firstVisits,
+                    "revisiting an already rendered chapter uses the open book's memory cache");
 
                 var cacheIdentity = webBook.S("id") + "\n" + webBook.S("sourceId") + "\n" + webUrl.AbsoluteUri;
                 var cacheKey = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(cacheIdentity)));
@@ -249,6 +253,7 @@ public sealed partial class MainWindow
                 await CloseReaderAsync();
                 await OpenReaderAsync(webBook);
                 await CheckDynamicChapterAsync(68);
+                Check(webVisits.GetValueOrDefault(68) > firstVisits, "reopening a book starts a fresh webpage reading session");
                 var voices = HttpVoice.Parse(baseUrl + "/dynamic-tts.wav?text={{speakText}}").Voices;
                 await voiceLibrary.SaveAsync(voices);
                 var tts = store.Settings["tts"]!.AsObject();
@@ -269,12 +274,15 @@ public sealed partial class MainWindow
                 }
                 finally { StopSpeech(); tts["voiceURI"] = ""; }
 
-                await ReadChapterAsync(dynamicIndex);
+                await CloseReaderAsync();
+                await OpenReaderAsync(webBook, dynamicIndex);
+                var nextVisits = webVisits.GetValueOrDefault(69);
                 store.Settings["autoCacheNext"] = true;
                 await readerWeb!.ExecuteScriptAsync("""
                     requestAnimationFrame(() => {
                         const viewport = document.getElementById('viewport');
-                        viewport.scrollTop = viewport.scrollHeight;
+                        viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight * 2.85);
+                        window.testEarlyPrefetch = viewport.scrollTop + viewport.clientHeight * 2.25 < viewport.scrollHeight;
                         window.testDynamicOffset = document.querySelector('.chapter h1').getBoundingClientRect().top;
                         reader.report();
                     });
@@ -284,8 +292,9 @@ public sealed partial class MainWindow
                     [...document.querySelectorAll('.chapter h1')].map(h => h.textContent).join('|').includes('第68章 动态章节测试|第69章 动态章节测试')
                     """) == "true");
                 Check(await readerWeb.ExecuteScriptAsync("""
-                    Math.abs(document.querySelector('.chapter h1').getBoundingClientRect().top - window.testDynamicOffset) <= 2
-                    """) == "true", "scrolling through a dynamic chapter appends the next chapter without shifting the visible text");
+                    window.testEarlyPrefetch && Math.abs(document.querySelector('.chapter h1').getBoundingClientRect().top - window.testDynamicOffset) <= 2
+                    """) == "true" && webVisits.GetValueOrDefault(69) == nextVisits + 1,
+                    "a slow webpage chapter starts earlier and appends without shifting the visible text");
                 store.Settings["autoCacheNext"] = false;
                 await readerWeb.ExecuteScriptAsync("""
                     (async () => {
@@ -322,6 +331,19 @@ public sealed partial class MainWindow
                     $"continuous reading preserves the visible text when trimming old chapters and resizing near a boundary (trim={scrolling.D("trim")}, resize={scrolling.D("resize")})");
                 await ReadChapterAsync(dynamicIndex + 1);
                 await CheckDynamicChapterAsync(69);
+                Check(webVisits.GetValueOrDefault(69) == nextVisits + 1, "manual chapter navigation reuses the prefetched text");
+                await CloseReaderAsync();
+                await OpenReaderAsync(webBook, dynamicIndex);
+                nextVisits = webVisits.GetValueOrDefault(69);
+                store.Settings["autoCacheNext"] = true;
+                var background = AppendChapterAsync(dynamicIndex + 1);
+                await WaitForAsync(() => Task.FromResult(webVisits.GetValueOrDefault(69) > nextVisits));
+                Check(appending, "slow next chapter is still preloading when the reader can request it manually");
+                store.Settings["autoCacheNext"] = false;
+                await ReadChapterAsync(dynamicIndex + 1);
+                await background;
+                await CheckDynamicChapterAsync(69);
+                Check(webVisits.GetValueOrDefault(69) == nextVisits + 1, "manual chapter navigation joins the in-flight preload without another request");
                 await StepReaderAsync(1);
                 var error = (StackPanel)readerError!;
                 Check(error.Visibility == Microsoft.UI.Xaml.Visibility.Visible && readingToken == "" &&
@@ -338,12 +360,36 @@ public sealed partial class MainWindow
             finally { cancelServer.Cancel(); server.Stop(); await serverTask; }
 
             var zip = Path.Combine(store.Root, "backup-test.zip");
+            var backupVoice = HttpVoice.Parse("""
+                {"name":"备份测试音色","url":"https://voice.example.test/speech","method":"POST","body":{"text":"{{speakText}}"},
+                 "headers":{"Authorization":"Bearer synthetic-backup-credential"},"contentType":"audio/mpeg"}
+                """).Voices.Single();
+            await voiceLibrary.MergeAsync([backupVoice]);
+            store.Settings["tts"]!["voiceURI"] = backupVoice.Id;
             await Backup.ExportAsync(store, zip, true);
             var preview = await Backup.ReadAsync(zip);
             var restored = new AppStore(Path.Combine(store.Root, "recovered"));
             await Backup.ApplyAsync(restored, preview, true);
             Check(restored.Books.Count == store.Books.Count && File.Exists(restored.DataPath(localBook.S("localFile"))) &&
                   restored.State["bookmarks"]!.AsArray().Count == 1 && restored.State["stats"] is null, "full ZIP round trip keeps books, files and bookmarks");
+            var persisted = new AppStore(restored.Root);
+            var restoredVoice = persisted.Voices.Load().Single(voice => voice.Id == backupVoice.Id);
+            Check(persisted.Settings["tts"].S("voiceURI") == backupVoice.Id &&
+                restoredVoice.Headers["Authorization"] == backupVoice.Headers["Authorization"] && JsonNode.DeepEquals(restoredVoice.Body, backupVoice.Body),
+                "local ZIP restores network voice settings, request credentials and active selection");
+            var existingVoice = backupVoice with { Name = "本机音色" };
+            await restored.Voices.MergeAsync([existingVoice]);
+            restored.Settings["tts"]!["voiceURI"] = existingVoice.Id;
+            await Backup.ApplyAsync(restored, preview, false);
+            Check(restored.Voices.Load().Any(voice => voice.Id == existingVoice.Id) && restored.Settings["tts"].S("voiceURI") == backupVoice.Id,
+                "merging a backup preserves other local voices and restores the saved selection");
+            var broken = new AppStore(Path.Combine(store.Root, "restore-write-failure"));
+            await broken.Voices.MergeAsync([existingVoice]);
+            Directory.CreateDirectory(Path.Combine(broken.Root, "data.json.tmp"));
+            var restoreFailed = false;
+            try { await Backup.ApplyAsync(broken, new BackupPreview(AppStore.Defaults(), []) { Voices = [backupVoice] }, true); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { restoreFailed = true; }
+            Check(restoreFailed && broken.Voices.Load().Single().Id == existingVoice.Id, "a failed data save restores the previous voice library");
             var old = Backup.ParseJson("""{"app":"moread","data":{"stats":{"yesterday":{"sec":12}},"history":[{"ci":1}],"books":[],"progress":{"book":{"ci":2}}}}""");
             Check(old.State["stats"] is null && !old.State.ContainsKey("history") && old.State["progress"]?["book"].I("ci") == 2,
                 "legacy reading history and stats are discarded while progress is preserved");
@@ -365,10 +411,16 @@ public sealed partial class MainWindow
             var oldStore = new AppStore(Path.Combine(store.Root, "old-backup-recovered"));
             await Backup.ApplyAsync(oldStore, await Backup.ReadAsync(legacyZip), false);
             Check(oldStore.Books.Count == 1 && File.Exists(oldStore.BookPath(oldStore.Books[0].S("localFile"))) && oldStore.State["stats"] is null, "old Electron fileMap restores local books without statistics");
+            restored.Settings["tts"]!["voiceURI"] = existingVoice.Id;
+            restored.Settings["webdav"]!["includeVoices"] = true;
+            await Backup.ApplyAsync(restored, old, true);
+            Check(restored.Settings["tts"].S("voiceURI") == existingVoice.Id && restored.Voices.Load().Any(voice => voice.Id == existingVoice.Id) &&
+                restored.Settings["webdav"].B("includeVoices"), "a backup without voices preserves the local library, selection and cloud preference");
 
             if (Environment.GetEnvironmentVariable("LEGADO_UI3_MOCK_DAV") is { Length: > 0 } davUrl)
             {
-                using var dav = new WebDav(new JsonObject { ["url"] = davUrl, ["user"] = "tester@example.com", ["pass"] = "app-pass-123", ["dir"] = "smoke" });
+                var cloud = new JsonObject { ["url"] = davUrl, ["user"] = "tester@example.com", ["pass"] = "app-pass-123", ["dir"] = "smoke" };
+                using var dav = new WebDav(cloud);
                 await dav.TestAsync();
                 await dav.UploadAsync("smoke.zip", zip);
                 var entries = await dav.ListAsync();
@@ -379,6 +431,35 @@ public sealed partial class MainWindow
                 await dav.DeleteAsync("smoke.zip");
                 Check(entries.Any(e => e.Name == "smoke.zip") && (await Backup.ReadAsync(downloaded)).State["books"]!.AsArray().Count == store.Books.Count &&
                     SourceImport.Preview(downloadedSources, []).Count == 1, "WebDAV mock supports upload, list, restore and source sync");
+                var originalCloud = store.Settings["webdav"]!.DeepClone();
+                store.Settings["webdav"] = cloud;
+                try
+                {
+                    async Task<BackupPreview> ReadUploadedBackupAsync()
+                    {
+                        var latest = (await dav.ListAsync()).Where(entry => entry.Name.StartsWith("legado-ui3-", StringComparison.Ordinal))
+                            .OrderByDescending(entry => entry.Name, StringComparer.Ordinal).First();
+                        await dav.DownloadAsync(latest.Name, downloaded);
+                        var uploaded = await Backup.ReadAsync(downloaded);
+                        await dav.DeleteAsync(latest.Name);
+                        return uploaded;
+                    }
+                    await CloudBackupAsync(false);
+                    var without = await ReadUploadedBackupAsync();
+                    using (var archive = ZipFile.OpenRead(downloaded))
+                    using (var manifest = new StreamReader(archive.GetEntry("legado-ui3.json")!.Open()))
+                    {
+                        var manifestText = await manifest.ReadToEndAsync();
+                        Check(without.Voices is null && !manifestText.Contains("synthetic-backup-credential") && !manifestText.Contains(backupVoice.Id),
+                            "WebDAV excludes both the voice profile and active selection by default");
+                    }
+                    cloud["includeVoices"] = true;
+                    await CloudBackupAsync(false);
+                    var with = await ReadUploadedBackupAsync();
+                    Check(with.Voices?.Any(voice => voice.Id == backupVoice.Id) == true && with.State["settings"]?["tts"].S("voiceURI") == backupVoice.Id,
+                        "WebDAV includes the network voice and current selection when enabled");
+                }
+                finally { store.Settings["webdav"] = originalCloud; }
             }
 
             var large = Enumerable.Range(0, 3200).Select(i => new JsonObject
@@ -784,7 +865,8 @@ public sealed partial class MainWindow
         }
     }
 
-    private static async Task ServeSmokePagesAsync(System.Net.Sockets.TcpListener server, CancellationToken token)
+    private static async Task ServeSmokePagesAsync(System.Net.Sockets.TcpListener server, CancellationToken token,
+        System.Collections.Concurrent.ConcurrentDictionary<int, int> webVisits)
     {
         try
         {
@@ -817,6 +899,7 @@ public sealed partial class MainWindow
                     continue;
                 }
                 var chapterNumber = path.StartsWith("/web-chapter/") && int.TryParse(path[13..], out var number) ? number : 0;
+                if (chapterNumber > 0) webVisits.AddOrUpdate(chapterNumber, 1, (_, count) => count + 1);
                 var page = chapterNumber > 0 ? $$"""
                     <h1>第{{chapterNumber}}章 动态章节测试</h1>
                     <nav hidden><a href="/web-chapter/{{chapterNumber - 1}}" rel="prev">上一章</a><a href="/web-chapter/{{chapterNumber + 1}}" rel="next">下一章</a></nav>
@@ -825,8 +908,10 @@ public sealed partial class MainWindow
                     <script>
                     const reading = document.querySelector('#reading');
                     if ({{chapterNumber}} < 70 && document.cookie.includes('web_fixture=1')) {
-                        reading.innerHTML = '<p style="opacity:0">不可见测试正文</p>' +
-                            '<p>网页正常加载的章节正文。这是公开样例，用于验证书架打开网页后的正文显示。</p>'.repeat(16);
+                        setTimeout(() => {
+                            reading.innerHTML = '<p style="opacity:0">不可见测试正文</p>' +
+                                '<p>网页正常加载的章节正文。这是公开样例，用于验证书架打开网页后的正文显示。</p>'.repeat(40);
+                        }, {{chapterNumber}} === 69 ? 450 : 0);
                     } else {
                         reading.hidden = true;
                         reading.nextElementSibling.hidden = false;
@@ -844,7 +929,7 @@ public sealed partial class MainWindow
                 var bytes = Encoding.UTF8.GetBytes(body);
                 try
                 {
-                    await wire.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {bytes.Length}\r\nConnection: close\r\n\r\n"), token);
+                    await wire.WriteAsync(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {bytes.Length}\r\nConnection: close\r\n\r\n"), token);
                     await wire.WriteAsync(bytes, token);
                 }
                 catch (IOException e) when (e.InnerException is System.Net.Sockets.SocketException socket &&
