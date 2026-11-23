@@ -70,4 +70,4 @@ dotnet publish .\Legado.UI3.csproj -c Release -p:Platform=x64 -o .\publish\win-x
 
 测试使用独立的临时数据目录。第三方资源许可随资源一并提供，见 [Assets](Assets/)。
 
-生成安装版时，先执行上面的发布命令，再使用 Inno Setup 的 `ISCC.exe /DAppVersion=1.0.1 .\tools\Installer.iss` 编译安装器。
+生成安装版时，先执行上面的发布命令，再使用 Inno Setup 的 `ISCC.exe /DAppVersion=1.0.2 .\tools\Installer.iss` 编译安装器。

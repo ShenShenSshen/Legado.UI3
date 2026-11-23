@@ -131,10 +131,12 @@
       book.append(chapterNode(chapter));
       const active = activeChapter();
       if (chapters.length > 4 && active && Number(active.dataset.ci) - chapters[0].ci > 2) {
-        const topBefore = active.offsetTop;
+        const topBefore = active.getBoundingClientRect().top;
         book.firstElementChild.remove();
         chapters.shift();
-        viewport.scrollTop -= topBefore - active.offsetTop;
+        // Compensate only the movement that the browser's scroll anchoring did not handle.
+        const shift = active.getBoundingClientRect().top - topBefore;
+        if (shift) viewport.scrollTop += shift;
       }
     },
     showNextRetry() {
@@ -185,9 +187,14 @@
     scheduled = true;
     requestAnimationFrame(() => { scheduled = false; progress(); });
   });
-  new ResizeObserver(() => { if (book.firstChild) seek(lastPercent); }).observe(viewport);
+  function layoutChanged() {
+    if (!book.firstChild) return;
+    if (mode === 'paged') seek(lastPercent);
+    else progress(false);
+  }
+  new ResizeObserver(layoutChanged).observe(viewport);
   document.fonts.addEventListener('loadingdone', () => {
-    if (book.firstChild && document.body.classList.contains('jetbrains')) seek(lastPercent);
+    if (document.body.classList.contains('jetbrains')) layoutChanged();
   });
   window.addEventListener('keydown', e => {
     const key = e.key.toLowerCase();

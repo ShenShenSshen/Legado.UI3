@@ -275,6 +275,7 @@ public sealed partial class MainWindow
                     requestAnimationFrame(() => {
                         const viewport = document.getElementById('viewport');
                         viewport.scrollTop = viewport.scrollHeight;
+                        window.testDynamicOffset = document.querySelector('.chapter h1').getBoundingClientRect().top;
                         reader.report();
                     });
                     void 0;
@@ -282,8 +283,43 @@ public sealed partial class MainWindow
                 await WaitForAsync(async () => await readerWeb.ExecuteScriptAsync("""
                     [...document.querySelectorAll('.chapter h1')].map(h => h.textContent).join('|').includes('第68章 动态章节测试|第69章 动态章节测试')
                     """) == "true");
-                Check(true, "scrolling through a dynamic chapter appends the next chapter in the same reader");
+                Check(await readerWeb.ExecuteScriptAsync("""
+                    Math.abs(document.querySelector('.chapter h1').getBoundingClientRect().top - window.testDynamicOffset) <= 2
+                    """) == "true", "scrolling through a dynamic chapter appends the next chapter without shifting the visible text");
                 store.Settings["autoCacheNext"] = false;
+                await readerWeb.ExecuteScriptAsync("""
+                    (async () => {
+                        const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+                        const viewport = document.getElementById('viewport');
+                        const sections = () => [...document.querySelectorAll('.chapter')];
+                        await frame(); await frame();
+                        const sample = reader.chapterText(Number(sections()[0].dataset.ci));
+                        const first = Number(sections()[0].dataset.ci);
+                        for (let ci = first + 2; ci <= first + 3; ci++) reader.append({ci, title:'测试续章', paras:sample});
+                        const active = sections()[3];
+                        viewport.scrollTop = active.offsetTop + 120;
+                        await frame(); await frame();
+                        const anchor = active.querySelector('p');
+                        const before = anchor.getBoundingClientRect().top;
+                        reader.append({ci:first + 4, title:'触发旧章回收', paras:sample});
+                        await frame(); await frame();
+                        const trim = anchor.getBoundingClientRect().top - before;
+                        const next = sections()[3];
+                        viewport.scrollTop = next.offsetTop - 120;
+                        await frame(); await frame();
+                        const nearNext = next.getBoundingClientRect().top;
+                        viewport.style.height = (viewport.clientHeight - 24) + 'px';
+                        await frame(); await frame();
+                        const resize = next.getBoundingClientRect().top - nearNext;
+                        viewport.style.height = '';
+                        await frame(); await frame();
+                        window.testScrollShift = {trim, resize, removedOldChapter: Number(sections()[0].dataset.ci) === first + 1};
+                    })()
+                    """);
+                await WaitForAsync(async () => await readerWeb.ExecuteScriptAsync("!!window.testScrollShift") == "true");
+                var scrolling = JsonNode.Parse(await readerWeb.ExecuteScriptAsync("window.testScrollShift"));
+                Check(scrolling.B("removedOldChapter") && Math.Abs(scrolling.D("trim")) <= 2 && Math.Abs(scrolling.D("resize")) <= 2,
+                    $"continuous reading preserves the visible text when trimming old chapters and resizing near a boundary (trim={scrolling.D("trim")}, resize={scrolling.D("resize")})");
                 await ReadChapterAsync(dynamicIndex + 1);
                 await CheckDynamicChapterAsync(69);
                 await StepReaderAsync(1);
