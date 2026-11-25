@@ -51,9 +51,10 @@ public sealed partial class MainWindow : Window
             notice.Visibility = notice.IsOpen ? Visibility.Visible : Visibility.Collapsed);
         Grid.SetRow(notice, 1); root.Children.Add(notice);
         navigation.PaneDisplayMode = NavigationViewPaneDisplayMode.Auto;
-        navigation.OpenPaneLength = 168;
+        navigation.OpenPaneLength = 136;
+        navigation.CompactPaneLength = 54;
         navigation.CompactModeThresholdWidth = 640;
-        navigation.ExpandedModeThresholdWidth = 1000;
+        navigation.ExpandedModeThresholdWidth = 1344;
         navigation.IsBackButtonVisible = NavigationViewBackButtonVisible.Collapsed;
         foreach (var (tag, label, glyph) in new[] { ("shelf", "书架", "\uE8F1"), ("search", "搜索", "\uE721"), ("explore", "浏览", "\uE707"), ("sources", "书源", "\uE8A5"), ("addons", "扩展", "\uEA86") })
             navigation.MenuItems.Add(new NavigationViewItem { Content = label, Tag = tag, Icon = new FontIcon { Glyph = glyph } });
@@ -130,6 +131,8 @@ public sealed partial class MainWindow : Window
 
     private void Navigate(string tag)
     {
+        captureShelfPosition = null;
+        returnToShelf = null;
         currentPage = tag;
         page.Content = tag switch
         {
@@ -171,7 +174,7 @@ public sealed partial class MainWindow : Window
     {
         if (closing) return;
         closing = true;
-        try { await FlushReadingProgressAsync(); await store.SaveAsync(); afterSave?.Invoke(); }
+        try { await CaptureReadingPositionAsync(); await FlushReadingProgressAsync(); await store.SaveAsync(); afterSave?.Invoke(); }
         catch (Exception e) { closing = false; ReportError(e); return; }
         Close();
     }
@@ -231,7 +234,7 @@ public sealed partial class MainWindow : Window
         var fullscreen = AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen;
         var showTitleBar = !fullscreen && readerBook is null;
         root.RowDefinitions[0].Height = new GridLength(showTitleBar ? 39 : 0);
-        if (readerFullScreen is not null) readerFullScreen.Content = fullscreen ? "退出全屏" : "全屏";
+        if (readerFullScreen is not null) readerFullScreen.Text = fullscreen ? "退出全屏" : "全屏";
         if (AppWindow.Presenter is OverlappedPresenter presenter)
         {
             if (presenter.HasTitleBar != showTitleBar) presenter.SetBorderAndTitleBar(presenter.HasBorder || showTitleBar, showTitleBar);

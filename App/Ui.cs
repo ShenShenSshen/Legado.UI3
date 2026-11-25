@@ -63,24 +63,41 @@ static class Ui
     public static string Quality(JsonObject data) => data.S("quality") switch { "great" => "优质", "ok" => "可用", "poor" => "较差", "dead" => "失效", _ => "未检测" };
 }
 
-public sealed class BookRow
+public sealed class BookRow : INotifyPropertyChanged
 {
+    private static readonly SolidColorBrush[] CoverPalette =
+    [
+        new(Windows.UI.Color.FromArgb(255, 39, 67, 95)),
+        new(Windows.UI.Color.FromArgb(255, 43, 76, 73)),
+        new(Windows.UI.Color.FromArgb(255, 77, 65, 98)),
+        new(Windows.UI.Color.FromArgb(255, 94, 67, 55)),
+        new(Windows.UI.Color.FromArgb(255, 49, 73, 97))
+    ];
     public JsonObject Data { get; }
     public string Id => Data.S("id");
     public string Name => Data.S("name", "未命名");
     public string Author => Data.S("author") is { Length: > 0 } author ? author : "佚名";
     public string? Cover => Uri.TryCreate(Data.S("cover"), UriKind.Absolute, out var uri) && uri.Scheme is "http" or "https" ? uri.AbsoluteUri : null;
-    public string Chapter { get; }
-    public string Progress { get; }
-    public double Percent { get; }
-    public string Detail => Author + (Chapter == "" ? "" : "  ·  " + Chapter);
+    public string Chapter { get; private set; } = "";
+    public string Progress { get; private set; } = "";
+    public string ProgressLabel => Progress.Length > 0 ? Progress : "未读";
+    public string ReadLabel => Progress.Length > 0 ? "继续阅读" : "开始阅读";
+    public Brush CoverTint => CoverPalette[Name.Take(32).Sum(character => character) % CoverPalette.Length];
+    public double Percent { get; private set; }
+    public event PropertyChangedEventHandler? PropertyChanged;
     public BookRow(JsonObject data, JsonObject progress)
     {
         Data = data;
-        var current = progress[data.S("id")];
+        UpdateReadingProgress(progress);
+    }
+    public void UpdateReadingProgress(JsonObject progress)
+    {
+        var current = progress[Id];
         Chapter = current.S("title", "尚未阅读");
-        Percent = data.I("total") > 0 ? Math.Clamp((current.I("ci") + current.D("pct")) / data.I("total") * 100, 0, 100) : 0;
+        Percent = Data.I("total") > 0 ? Math.Clamp((current.I("ci") + current.D("pct")) / Data.I("total") * 100, 0, 100) : 0;
         Progress = current is not null ? $"{Percent:0}%" : "";
+        foreach (var name in new[] { nameof(Chapter), nameof(Progress), nameof(ProgressLabel), nameof(ReadLabel), nameof(Percent) })
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 }
 

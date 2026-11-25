@@ -4,7 +4,8 @@
   const book = document.getElementById('book');
   const chapters = [];
   let mode = 'scroll', page = 0, pageCount = 1, pageStride = 0, scheduled = false;
-  let token = '', lastPercent = 0, restoreFrame = 0;
+  let token = '', restoreFrame = 0, lastPosition = null, restored = null;
+  let layoutWidth = 0, layoutHeight = 0;
   let prefetchScreens = 2.25;
   const post = value => chrome.webview.postMessage({ ...value, token });
   const isImage = value => /^(data:image\/(?:png|jpeg|jpg|gif|webp|avif|bmp|svg\+xml);|https?:\/\/)/i.test(value);
@@ -24,7 +25,7 @@
         const figure = document.createElement('figure');
         const image = document.createElement('img');
         image.alt = '正文插图';
-        image.addEventListener('load', () => { if (mode === 'paged' && section.isConnected) repaginate(lastPercent); });
+        image.addEventListener('load', () => { if (mode === 'paged' && section.isConnected) layoutChanged(true); });
         image.src = imageUrl;
         figure.append(image);
         section.append(figure);
@@ -50,25 +51,70 @@
     const bottomPadding = parseFloat(getComputedStyle(viewport).paddingBottom);
     return Math.max(1, section.offsetHeight + section.offsetTop - scrollOrigin(section) - viewport.clientHeight + bottomPadding);
   }
-  function progress(requestNext = true) {
-    const active = activeChapter();
-    if (!active || !token || !viewport.clientHeight) return;
-    const ci = Number(active.dataset.ci);
-    if (mode === 'paged') {
-      lastPercent = pageCount > 1 ? page / (pageCount - 1) : 0;
-      post({ type:'progress', ci, pct:lastPercent, page:page + 1, pages:pageCount });
-      return;
+  // Multi-column layout fragments paragraphs, so use the rectangle of a single character.
+  function characterRect(text, offset) {
+    const range = document.createRange();
+    range.setStart(text, offset);
+    range.setEnd(text, offset + 1);
+    return range.getBoundingClientRect();
+  }
+  function firstAfter(count, before) {
+    let start = 0, end = count;
+    while (start < end) {
+      const mid = Math.floor((start + end) / 2);
+      if (before(mid)) start = mid + 1;
+      else end = mid;
     }
-    lastPercent = clamp((viewport.scrollTop - scrollOrigin(active)) / scrollRange(active));
-    post({ type:'progress', ci, pct:lastPercent });
-    if (requestNext && viewport.scrollTop + viewport.clientHeight * prefetchScreens >= viewport.scrollHeight)
+    return start;
+  }
+  function captureAnchor(section) {
+    const view = viewport.getBoundingClientRect();
+    const before = rect => mode === 'paged' ? rect.right <= view.left : rect.bottom <= view.top;
+    const block = firstAfter(section.children.length, i => {
+      const rects = section.children[i].getClientRects();
+      return !rects.length || before(rects[rects.length - 1]);
+    });
+    const element = section.children[block];
+    if (!element) return null;
+    const text = element.firstChild;
+    const length = text instanceof Text ? text.length : 0;
+    const offset = length ? firstAfter(length, i => before(characterRect(text, i))) : 0;
+    if (length && offset === length) return null;
+    const rect = length ? characterRect(text, offset) : element.getClientRects()[0];
+    return rect ? { block, offset, length, inset:rect.top - view.top } : null;
+  }
+  function anchorRect(section, anchor) {
+    if (!anchor || !Number.isInteger(anchor.block) || !Number.isInteger(anchor.offset) || !Number.isFinite(anchor.inset)) return null;
+    const element = section.children[anchor.block];
+    if (!element) return null;
+    const text = element.firstChild;
+    const length = text instanceof Text ? text.length : 0;
+    if (length !== anchor.length || anchor.offset < 0 || anchor.offset >= Math.max(1, length)) return null;
+    return length ? characterRect(text, anchor.offset) : element.getClientRects()[0];
+  }
+  function position() {
+    const active = activeChapter();
+    if (!active || !token || !viewport.clientHeight) return null;
+    const ci = Number(active.dataset.ci);
+    if (restored && (restored.ci !== ci || restored.page !== page || restored.top !== viewport.scrollTop)) restored = null;
+    const anchor = restored?.anchor ?? captureAnchor(active);
+    if (mode === 'paged') return { ci, anchor, pct:pageCount > 1 ? page / (pageCount - 1) : 0, page:page + 1, pages:pageCount };
+    return { ci, anchor, pct:clamp((viewport.scrollTop - scrollOrigin(active)) / scrollRange(active)) };
+  }
+  function progress(requestNext = true) {
+    syncLayout();
+    const current = position();
+    if (!current) return null;
+    lastPosition = current;
+    post({ type:'progress', ...current });
+    if (mode === 'scroll' && requestNext && viewport.scrollTop + viewport.clientHeight * prefetchScreens >= viewport.scrollHeight)
       post({ type:'needNext', ci:chapters.at(-1).ci });
+    return current;
   }
   function drawPage() {
     book.style.transform = mode === 'paged' ? 'translateX(' + (-page * pageStride) + 'px)' : '';
-    progress(false);
   }
-  function repaginate(percent) {
+  function repaginate(percent, section, anchor) {
     const style = getComputedStyle(viewport);
     const inset = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
     const width = Math.max(1, viewport.clientWidth - inset);
@@ -78,16 +124,33 @@
     book.style.setProperty('--column', width + 'px');
     book.style.setProperty('--column-gap', gap + 'px');
     pageCount = Math.max(1, Math.round((book.scrollWidth + gap) / pageStride));
-    page = Math.round(clamp(percent) * (pageCount - 1));
+    const rect = anchorRect(section, anchor);
+    page = rect ? Math.max(0, Math.min(pageCount - 1, Math.floor((rect.left - book.getBoundingClientRect().left) / pageStride)))
+      : Math.round(clamp(percent) * (pageCount - 1));
     drawPage();
+    return rect;
   }
-  function seek(percent, section = activeChapter()) {
+  function readingWidth() { return mode === 'paged' ? viewport.clientWidth : book.clientWidth; }
+  function seek(percent, section, anchor) {
     if (!section || !viewport.clientHeight) return;
-    if (mode === 'paged') repaginate(percent);
+    let rect;
+    if (mode === 'paged') rect = repaginate(percent, section, anchor);
     else {
       book.style.transform = '';
-      viewport.scrollTop = scrollOrigin(section) + scrollRange(section) * clamp(percent);
-      progress();
+      rect = anchorRect(section, anchor);
+      viewport.scrollTop = rect ? viewport.scrollTop + rect.top - viewport.getBoundingClientRect().top - anchor.inset
+        : scrollOrigin(section) + scrollRange(section) * clamp(percent);
+    }
+    layoutWidth = readingWidth();
+    layoutHeight = viewport.clientHeight;
+    restored = rect ? { ci:Number(section.dataset.ci), page, top:viewport.scrollTop, anchor } : null;
+  }
+  function syncLayout(force = false) {
+    if (!lastPosition || !viewport.clientHeight) return;
+    if (force || layoutWidth !== readingWidth() || (mode === 'paged' && layoutHeight !== viewport.clientHeight)) {
+      const { ci, pct, anchor } = lastPosition;
+      const section = book.querySelector('.chapter[data-ci="' + ci + '"]');
+      seek(pct, section || activeChapter(), section ? anchor : null);
     }
   }
   function setTheme(theme) {
@@ -113,18 +176,25 @@
 
   window.reader = {
     theme: setTheme,
-    set(chapter, settings, newToken, percent = 0) {
+    set(chapter, settings, newToken, percent = 0, anchor = null) {
       cancelAnimationFrame(restoreFrame);
       token = newToken;
       chapters.length = 0;
       chapters.push(chapter);
-      book.replaceChildren(chapterNode(chapter));
+      const section = chapterNode(chapter);
+      book.replaceChildren(section);
       viewport.scrollTop = 0;
       page = 0;
-      lastPercent = percent;
+      lastPosition = null;
+      restored = null;
       applySettings(settings);
-      seek(percent);
-      restoreFrame = requestAnimationFrame(() => { if (token === newToken) { seek(percent); viewport.focus({ preventScroll:true }); } });
+      seek(percent, section, anchor);
+      restoreFrame = requestAnimationFrame(() => {
+        if (token !== newToken) return;
+        if (!lastPosition) seek(percent, section, anchor);
+        viewport.focus({ preventScroll:true });
+        progress();
+      });
     },
     append(chapter) {
       if (mode !== 'scroll' || chapters.some(c => c.ci === chapter.ci)) return;
@@ -150,16 +220,19 @@
       book.append(retry);
     },
     settings(settings) {
-      const section = activeChapter(), percent = lastPercent;
+      syncLayout();
+      const section = activeChapter(), current = position();
       applySettings(settings);
-      seek(percent, section);
+      seek(current?.pct ?? 0, section, current?.anchor);
+      progress();
     },
     report() { progress(); },
+    position(requestNext = false) { return progress(requestNext); },
     chapterText(ci) { return chapters.find(chapter => chapter.ci === ci)?.paras || []; },
     step(direction) {
       if (mode === 'scroll') { viewport.scrollBy({ top:direction * viewport.clientHeight * .86 }); return; }
       if (page + direction < 0 || page + direction >= pageCount) post({ type:'chapter', direction });
-      else { page += direction; drawPage(); }
+      else { page += direction; drawPage(); progress(false); }
     },
     highlight(ci, index) {
       book.querySelector('.speaking')?.classList.remove('speaking');
@@ -174,6 +247,7 @@
           const delta = Math.floor((rect.left - view.left) / pageStride);
           page = Math.max(0, Math.min(pageCount - 1, page + delta));
           drawPage();
+          progress(false);
         }
       }
     },
@@ -189,14 +263,13 @@
     scheduled = true;
     requestAnimationFrame(() => { scheduled = false; progress(); });
   });
-  function layoutChanged() {
-    if (!book.firstChild) return;
-    if (mode === 'paged') seek(lastPercent);
-    else progress(false);
+  function layoutChanged(force = false) {
+    syncLayout(force);
+    progress(false);
   }
-  new ResizeObserver(layoutChanged).observe(viewport);
+  new ResizeObserver(() => layoutChanged()).observe(viewport);
   document.fonts.addEventListener('loadingdone', () => {
-    if (document.body.classList.contains('jetbrains')) layoutChanged();
+    if (document.body.classList.contains('jetbrains')) layoutChanged(true);
   });
   window.addEventListener('keydown', e => {
     const key = e.key.toLowerCase();

@@ -4,7 +4,7 @@
 
 <h1 align="center">Legado·UI3</h1>
 
-<p align="center">面向 Windows x64 的 Legado 桌面改版 · 使用 WinUI 3 构建</p>
+<p align="center">Windows x64 阅读器，基于 Legado 书源生态，使用 WinUI 3 构建</p>
 
 <p align="center"><a href="https://github.com/ShenShenSshen/Legado.UI3/releases/latest">下载 Windows x64 安装版或便携版</a></p>
 
@@ -16,7 +16,8 @@ Legado·UI3 以 [Legado 手机端（阅读 3.0）](https://github.com/gedoor/leg
 
 ## 功能
 
-- **书架与阅读** — 导入或拖放 TXT、EPUB，按分组管理书籍。支持翻页、连续滚动、目录、书签和进度恢复，可调节字体、行距、正文宽度和夜间底色。网页转成的书籍支持后台提前加载下一章和会话内正文复用。
+- **书架** — 导入或拖放 TXT、EPUB，按分组管理书籍，在封面网格和紧凑列表间切换。选书即可查看详情和进度。从阅读器返回时，恢复书架的滚动位置和选中的书。
+- **阅读器** — 支持滚动和翻页，可调节字体、行距、正文宽度及夜间底色。续读能定位到段落内，调整字号或窗口大小后仍可接着原来的文字读。目录、书签、排版和朗读设置从右侧浮出，正文位置保持稳定。网页章节支持提前加载下一章和会话内正文复用。
 - **搜索与发现** — 按书名或作者检索启用的书源，可同时搜索全部书源。切换书源浏览分类、榜单和书单，预览目录或试读后加入书架。
 - **书源管理** — 导入 Legado 书源 JSON、本地文件或 GitHub 网络链接。支持分组、启停、检测、批量选择和删除。
 - **朗读** — 选择 Windows 系统音色，或导入 Legado TTS 配置和网络接口。支持试听、调节语速、读完续章和批量删除网络音色。
@@ -26,7 +27,7 @@ Legado·UI3 以 [Legado 手机端（阅读 3.0）](https://github.com/gedoor/leg
 
 ## 界面截图
 
-书架和阅读器截图使用演示数据，书源管理截图展示实际导入的 333 条书源，网址仅显示站点域名。
+书架和阅读器截图为 v1.0.3 的演示界面。书源管理截图展示实际导入的 333 条书源，网址仅显示站点域名。
 
 ### 书架
 
@@ -72,4 +73,4 @@ dotnet publish .\Legado.UI3.csproj -c Release -p:Platform=x64 -o .\publish\win-x
 
 测试使用独立的临时数据目录。第三方资源许可随资源一并提供，见 [Assets](Assets/)。
 
-生成安装版时，先执行上面的发布命令，再使用 Inno Setup 的 `ISCC.exe /DAppVersion=1.0.3 .\tools\Installer.iss` 编译安装器。
+生成安装版时，先执行上面的发布命令，再使用 Inno Setup 的 `ISCC.exe /DAppVersion=1.0.4 .\tools\Installer.iss` 编译安装器。

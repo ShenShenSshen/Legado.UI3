@@ -3,6 +3,7 @@ using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
+using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Legado.UI3.Core;
 
@@ -68,7 +69,8 @@ public sealed partial class MainWindow
             Check(sourceList.SelectedItems.Count == 0 && sourceList.Items.Count == 1, "filter clears hidden selections");
             sourceQuery = "";
             var readFixture = Path.Combine(store.Root, "长篇示例.txt");
-            var body = string.Join("\n", Enumerable.Range(1, 110).Select(i => $"{i:000} 页上的文字需要留在原来的顺序。Legado·UI3正在测试一段比较长的正文，让读者可以翻页和继续看下一章。"));
+            var body = string.Join("\n", Enumerable.Range(1, 110).Select(i => string.Concat(Enumerable.Repeat(
+                $"{i:000} 页上的文字需要留在原来的顺序。Legado·UI3正在测试一段比较长的正文，让读者可以翻页和继续看下一章。", i == 45 ? 10 : 1))));
             await File.WriteAllTextAsync(readFixture, "第一章 山路\n" + body + "\n第二章 灯火\n" + body);
             var localBook = await local.ImportAsync(readFixture);
             Check(localBook.I("total") == 2, "TXT imported and split into chapters");
@@ -77,6 +79,8 @@ public sealed partial class MainWindow
                 var ebook = await local.ImportAsync(epub);
                 Check(ebook.I("total") > 0, "upstream EPUB parsed with the native ZIP / WebView2 parser");
             }
+            await TestBookshelfLayoutAsync(localBook, Check);
+            await TestBookshelfReturnAsync(localBook, Check);
 
             var readingWindowSize = AppWindow.Size;
             var readingWindowPosition = AppWindow.Position;
@@ -122,6 +126,23 @@ public sealed partial class MainWindow
             await readerWeb!.ExecuteScriptAsync("reader.highlight(0,60)");
             await Task.Delay(360);
             Check(readingPercent > .3 && readingPercent < .8, "scroll position tracked");
+            var readingGeometry = await ReaderGeometryAsync();
+            var readingViewport = readerWeb.TransformToVisual(root).TransformPoint(new Windows.Foundation.Point());
+            var readingVersion = readingToken;
+            ToggleDirectory();
+            await Task.Delay(280);
+            Check(readerSplit!.IsPaneOpen && await ReaderGeometryAsync() == readingGeometry,
+                "opening the chapter drawer preserves viewport dimensions and scroll offset");
+            ToggleReaderSettings();
+            await Task.Delay(280);
+            Check(readerSplit.IsPaneOpen && ReferenceEquals(readerSplit.Pane, readerSettingsPane) &&
+                await ReaderGeometryAsync() == readingGeometry &&
+                readerWeb.TransformToVisual(root).TransformPoint(new Windows.Foundation.Point()).Equals(readingViewport),
+                "switching to the typography and narration drawer leaves the text in place");
+            HandleReaderEscape();
+            await Task.Delay(280);
+            Check(!readerSplit.IsPaneOpen && await ReaderGeometryAsync() == readingGeometry && readingToken == readingVersion,
+                "closing a reader drawer preserves the original reading session and position");
             await AddBookmarkAsync();
             var saved = readingPercent;
             await CloseReaderAsync();
@@ -130,6 +151,7 @@ public sealed partial class MainWindow
             await OpenReaderAsync(localBook);
             await Task.Delay(320);
             Check(Math.Abs(saved - readingPercent) < .08, "scroll position restored");
+            await TestReaderResumeAsync(localBook, Check);
             await readerWeb.ExecuteScriptAsync("const v=document.getElementById('viewport'); v.scrollTop=v.scrollHeight;");
             await WaitForAsync(async () => await readerWeb.ExecuteScriptAsync("!!document.querySelector('.chapter[data-ci=\"1\"]')") == "true");
             Check(true, "scroll mode appends next chapter");
@@ -283,18 +305,22 @@ public sealed partial class MainWindow
                         const viewport = document.getElementById('viewport');
                         viewport.scrollTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight * 2.85);
                         window.testEarlyPrefetch = viewport.scrollTop + viewport.clientHeight * 2.25 < viewport.scrollHeight;
+                        window.testViewportWidth = viewport.clientWidth;
                         window.testDynamicOffset = document.querySelector('.chapter h1').getBoundingClientRect().top;
                         reader.report();
                     });
                     void 0;
                     """);
+                ToggleDirectory();
                 await WaitForAsync(async () => await readerWeb.ExecuteScriptAsync("""
                     [...document.querySelectorAll('.chapter h1')].map(h => h.textContent).join('|').includes('第68章 动态章节测试|第69章 动态章节测试')
                     """) == "true");
                 Check(await readerWeb.ExecuteScriptAsync("""
-                    window.testEarlyPrefetch && Math.abs(document.querySelector('.chapter h1').getBoundingClientRect().top - window.testDynamicOffset) <= 2
-                    """) == "true" && webVisits.GetValueOrDefault(69) == nextVisits + 1,
-                    "a slow webpage chapter starts earlier and appends without shifting the visible text");
+                    window.testEarlyPrefetch && document.getElementById('viewport').clientWidth === window.testViewportWidth &&
+                    Math.abs(document.querySelector('.chapter h1').getBoundingClientRect().top - window.testDynamicOffset) <= 2
+                    """) == "true" && webVisits.GetValueOrDefault(69) == nextVisits + 1 && readerSplit!.IsPaneOpen,
+                    "a slow webpage chapter appends under the open drawer without shifting the visible text");
+                HandleReaderEscape();
                 store.Settings["autoCacheNext"] = false;
                 await readerWeb.ExecuteScriptAsync("""
                     (async () => {
@@ -495,7 +521,7 @@ public sealed partial class MainWindow
             await Task.Delay(350);
             Check(root.ActualTheme == Microsoft.UI.Xaml.ElementTheme.Dark && navigation.DisplayMode != NavigationViewDisplayMode.Expanded &&
                 sourceList.ActualWidth > 280, "native layout adapts to a narrow window and dark theme");
-            Check(navigation.OpenPaneLength == 168, "expanded navigation has the narrower width");
+            Check(navigation.OpenPaneLength == 136 && navigation.CompactPaneLength == 54, "navigation uses the slim book-dashboard rail");
             Check(!Microsoft.UI.Windowing.AppWindowTitleBar.IsCustomizationSupported() ||
                 new Windows.UI.ViewManagement.AccessibilitySettings().HighContrast ||
                 AppWindow.TitleBar.ButtonForegroundColor == Microsoft.UI.Colors.White, "dark theme keeps caption buttons readable");
@@ -646,6 +672,199 @@ public sealed partial class MainWindow
         }
         finally { slowServer.Stop(); SelectPage("shelf"); store.Sources.Remove(slow); store.Sources.Remove(switched); }
     }
+
+    private async Task TestBookshelfLayoutAsync(JsonObject book, Action<bool, string> check)
+    {
+        var size = AppWindow.Size;
+        var savedView = store.Settings["shelfList"]?.DeepClone();
+        var savedSelection = shelfSelected;
+        var alternate = book.Copy();
+        alternate["id"] = "shelf-layout-test";
+        alternate["name"] = "另一本文集";
+        store.Books.Add(alternate);
+        store.Progress[book.S("id")] = NewProgress(0, "第一章 山路", .5);
+        try
+        {
+            AppWindow.Resize(new Windows.Graphics.SizeInt32(1440, 900));
+            store.Settings["shelfList"] = false;
+            shelfSelected = "";
+            SelectPage("shelf");
+            var shelf = (Microsoft.UI.Xaml.DependencyObject)page.Content;
+            var grid = VisualChildren<GridView>(shelf).Single();
+            await WaitForAsync(() => Task.FromResult(grid.IsLoaded && grid.ActualWidth > 0));
+            var details = VisualChildren<ContentControl>(shelf).Single(element =>
+                Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(element) == "书籍详情面板");
+            check(grid.SelectedItem is BookRow initial && ReferenceEquals(initial.Data, book) && details.Content is not null,
+                "wide bookshelf defaults to the most recently read book in the detail pane");
+            grid.SelectedItem = grid.Items.OfType<BookRow>().Single(row => ReferenceEquals(row.Data, alternate));
+            check(readerBook is null && details.Tag is BookRow active && ReferenceEquals(active.Data, alternate),
+                "selecting a cover updates its detail pane without opening the reader");
+            var toggle = VisualChildren<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>(shelf).Single(element =>
+                Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(element) == "紧凑列表");
+            var peer = Microsoft.UI.Xaml.Automation.Peers.FrameworkElementAutomationPeer.CreatePeerForElement(toggle);
+            ((Microsoft.UI.Xaml.Automation.Provider.IToggleProvider)peer.GetPattern(Microsoft.UI.Xaml.Automation.Peers.PatternInterface.Toggle)).Toggle();
+            var list = VisualChildren<ListView>(shelf).Single();
+            await WaitForAsync(() => Task.FromResult(store.Settings.B("shelfList") && list.ActualWidth > 0));
+            check(grid.Visibility == Microsoft.UI.Xaml.Visibility.Collapsed && list.SelectedItem is BookRow row && ReferenceEquals(row.Data, alternate),
+                "compact list switch retains the selected book and detail pane");
+            AppWindow.Resize(new Windows.Graphics.SizeInt32(680, 640));
+            await WaitForAsync(() => Task.FromResult(VisualChildren<Button>(shelf).Any(button => button.Content is "详情" && button.ActualWidth > 0)));
+            var detailsButton = VisualChildren<Button>(shelf).Single(button => button.Content is "详情");
+            var quickRead = ((Grid)detailsButton.Parent).Children.OfType<Button>().Single(button => button.Content is "开始阅读");
+            check(quickRead.Visibility == Microsoft.UI.Xaml.Visibility.Visible && quickRead.ActualWidth > 0,
+                "narrow bookshelf provides a compact details and read strip");
+            var search = VisualChildren<TextBox>(shelf).Single(box =>
+                Microsoft.UI.Xaml.Automation.AutomationProperties.GetName(box) == "搜索书架");
+            search.Text = alternate.S("name");
+            await WaitForAsync(() => Task.FromResult(list.Items.Count == 1));
+            check(list.Items.Count == 1 && list.SelectedItem is BookRow match && ReferenceEquals(match.Data, alternate),
+                "inline shelf search filters the collection and keeps the match selected");
+        }
+        finally
+        {
+            store.Progress.Remove(book.S("id"));
+            store.Books.Remove(alternate);
+            if (savedView is null) store.Settings.Remove("shelfList");
+            else store.Settings["shelfList"] = savedView;
+            shelfSelected = savedSelection;
+            shelfQuery = "";
+            AppWindow.Resize(size);
+            SelectPage("shelf");
+        }
+    }
+
+    private async Task TestBookshelfReturnAsync(JsonObject book, Action<bool, string> check)
+    {
+        var size = AppWindow.Size;
+        var storedMode = store.Settings["shelfList"]?.DeepClone();
+        var storedSort = store.Settings["shelfSort"]?.DeepClone();
+        var storedName = book.S("name");
+        var selected = shelfSelected;
+        const string prefix = "书架定位测试 ";
+        var fixtures = Enumerable.Range(0, 80).Where(i => i != 30).Select(i => new JsonObject
+        {
+            ["id"] = "shelf-return-" + i, ["name"] = prefix + i.ToString("000"), ["kind"] = "local", ["total"] = 2
+        }).ToArray();
+        foreach (var fixture in fixtures) store.Books.Add(fixture);
+        book["name"] = prefix + "030";
+        store.Settings["shelfSort"] = "name";
+        try
+        {
+            foreach (var compact in new[] { true, false })
+            {
+                AppWindow.Resize(new Windows.Graphics.SizeInt32(1440, 900));
+                store.Settings["shelfList"] = compact;
+                SelectPage("shelf");
+                var shelf = (FrameworkElement)page.Content;
+                ListViewBase view = compact ? VisualChildren<ListView>(shelf).Single() : VisualChildren<GridView>(shelf).Single();
+                await WaitForAsync(() => Task.FromResult(ShelfScrollViewer(view)?.ScrollableHeight > 500));
+                var row = view.Items.OfType<BookRow>().Single(row => ReferenceEquals(row.Data, book));
+                view.SelectedItem = row;
+                view.ScrollIntoView(row, ScrollIntoViewAlignment.Leading);
+                var scroll = ShelfScrollViewer(view)!;
+                await WaitForAsync(() => Task.FromResult(scroll.VerticalOffset > 500 && view.ContainerFromItem(row) is not null));
+                var offset = scroll.VerticalOffset;
+                await OpenReaderAsync(book, 0);
+                if (!compact) AppWindow.Resize(new Windows.Graphics.SizeInt32(850, 740));
+                await CloseReaderAsync();
+                await WaitForAsync(() => Task.FromResult(view.ContainerFromItem(row) is FrameworkElement &&
+                    (compact ? Math.Abs(scroll.VerticalOffset - offset) < 1 : view.ActualWidth is > 0 and < 850)));
+                var container = (FrameworkElement)view.ContainerFromItem(row);
+                var top = container.TransformToVisual(scroll).TransformPoint(default).Y;
+                check(ReferenceEquals(page.Content, shelf) && ReferenceEquals(view.SelectedItem, row) &&
+                    row.ReadLabel == "继续阅读" && top >= -1 && top + container.ActualHeight <= scroll.ViewportHeight + 1,
+                    compact ? "returning from reading restores compact shelf offset, selection and updated progress" :
+                    "returning after a window resize keeps the selected book visible in the cover grid");
+                if (compact) check(container.FocusState != FocusState.Unfocused, "returning to the compact shelf gives focus back to the book row");
+            }
+        }
+        finally
+        {
+            foreach (var fixture in fixtures) store.Books.Remove(fixture);
+            book["name"] = storedName;
+            if (storedMode is null) store.Settings.Remove("shelfList");
+            else store.Settings["shelfList"] = storedMode;
+            store.Settings["shelfSort"] = storedSort;
+            store.Progress.Remove(book.S("id"));
+            shelfSelected = selected;
+            AppWindow.Resize(size);
+            SelectPage("shelf");
+        }
+    }
+
+    private async Task TestReaderResumeAsync(JsonObject book, Action<bool, string> check)
+    {
+        var size = AppWindow.Size;
+        var font = store.Settings.I("fontSize", 22);
+        var snapshot = JsonNode.Parse(await readerWeb!.ExecuteScriptAsync("""
+            (() => {
+                const view = document.getElementById('viewport');
+                const node = document.querySelector('.chapter[data-ci="0"] p[data-index="44"]').firstChild;
+                const range = document.createRange();
+                range.setStart(node, 210); range.setEnd(node, 211);
+                view.scrollTop += range.getBoundingClientRect().top - view.getBoundingClientRect().top - 2;
+                window.resumeAnchor = reader.position().anchor;
+                return window.resumeAnchor;
+            })()
+            """));
+        check(snapshot.I("block") == 45 && snapshot.I("offset") > 100, "reading position identifies a line within a long paragraph");
+        async Task<bool> SameLineAsync(bool paged = false) => await readerWeb.ExecuteScriptAsync($$"""
+            (() => {
+                const a = window.resumeAnchor;
+                const section = document.querySelector('.chapter[data-ci="0"]');
+                const text = section.children[a.block].firstChild;
+                const range = document.createRange();
+                range.setStart(text, a.offset); range.setEnd(text, a.offset + 1);
+                const rect = range.getBoundingClientRect();
+                const view = document.getElementById('viewport').getBoundingClientRect();
+                return {{(paged ? "rect.left >= view.left && rect.right <= view.right" :
+                    "Math.abs(rect.top - view.top - a.inset) <= 2")}};
+            })()
+            """) == "true";
+        store.Settings["fontSize"] = font + 8;
+        await RefreshReaderAppearanceAsync(false);
+        check(await SameLineAsync(), "changing the font size keeps the same line at the top of the reader");
+        AppWindow.Resize(new Windows.Graphics.SizeInt32(690, size.Height - 80));
+        await WaitForAsync(async () => await readerWeb.ExecuteScriptAsync("document.getElementById('viewport').clientWidth < 735") == "true");
+        await WaitForAsync(() => SameLineAsync());
+        check(true, "narrowing the reading window preserves the line after text rewraps");
+
+        await CloseReaderAsync();
+        var progress = store.Progress[book.S("id")] as JsonObject;
+        check(JsonNode.DeepEquals(progress?["anchor"], snapshot), "closing the book saves the paragraph and character position");
+        AppWindow.Resize(size);
+        store.Settings["fontSize"] = font;
+        await OpenReaderAsync(book);
+        await WaitForAsync(() => SameLineAsync());
+        check(true, "reopening the book at a different size and font restores the saved line");
+        store.Settings["pageMode"] = "paged";
+        await RefreshReaderAppearanceAsync(true);
+        check(await SameLineAsync(paged: true), "switching to paged reading keeps the saved text on the current page");
+        AppWindow.Resize(new Windows.Graphics.SizeInt32(720, size.Height - 130));
+        await WaitForAsync(async () => await readerWeb.ExecuteScriptAsync("document.getElementById('viewport').clientWidth < 745") == "true");
+        await WaitForAsync(() => SameLineAsync(paged: true));
+        check(true, "reflowing pages keeps the same text on screen");
+        store.Settings["pageMode"] = "scroll";
+        AppWindow.Resize(size);
+        await RefreshReaderAppearanceAsync(true);
+        await WaitForAsync(async () => await readerWeb.ExecuteScriptAsync("document.getElementById('viewport').clientWidth > 745") == "true");
+        await WaitForAsync(() => SameLineAsync());
+        check(true, "switching back to scroll mode retains the saved line");
+
+        await CloseReaderAsync();
+        store.Progress[book.S("id")] = NewProgress(0, "第一章 山路", .36);
+        await OpenReaderAsync(book);
+        check(Math.Abs(readingPercent - .36) < .01 && store.Progress[book.S("id")]?["anchor"] is JsonObject,
+            "legacy percent-only progress restores and acquires a paragraph position");
+    }
+
+    private async Task<string> ReaderGeometryAsync() => await readerWeb!.ExecuteScriptAsync("""
+        (() => {
+            const viewport = document.getElementById('viewport');
+            const block = document.querySelector('.chapter h1').getBoundingClientRect();
+            return [viewport.clientWidth, viewport.clientHeight, viewport.scrollTop, block.x, block.y];
+        })()
+        """);
 
     private async Task TestUpdateDownloadAsync(Action<bool, string> check)
     {

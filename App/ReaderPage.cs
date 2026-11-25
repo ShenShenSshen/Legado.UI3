@@ -17,14 +17,17 @@ public sealed partial class MainWindow
     private Task? readerInitialization;
     private Grid? readerSurface;
     private SplitView? readerSplit;
+    private FrameworkElement? readerSettingsPane;
     private FrameworkElement? readerTop, readerBottom, readerError;
     private TextBlock? readerTitle, readerPosition;
-    private Button? readerPrevious, readerNext, readerSpeech, readerSwitch, readerFullScreen;
+    private Button? readerPrevious, readerNext, readerSpeech;
+    private MenuFlyoutItem? readerSwitch, readerFullScreen;
     private JsonObject? readerBook;
     private JsonObject[] readerChapters = [];
     private JsonArray? localChapters;
     private int readingIndex, requestedChapter, readerSession;
     private double readingPercent;
+    private JsonObject? readingAnchor;
     private string readingToken = "";
     private bool readerBusy, progressDirty, appending, prefetchFailed, readerWasFullScreen;
     private readonly DispatcherTimer progressTimer = new() { Interval = TimeSpan.FromMilliseconds(1200) };
@@ -39,14 +42,23 @@ public sealed partial class MainWindow
         readerPosition = Ui.Text("", 13, true);
         var directory = Button("目录", ToggleDirectory);
         var bookmark = ActionButton("加书签", AddBookmarkAsync);
-        readerSwitch = ActionButton("换源", async () => { if (readerBook is { } book) await SwitchSourceAsync(book); });
-        var readerSettings = new Pivot { Width = 350, Height = 430 };
+        var readerSettings = new Pivot();
         readerSettings.Items.Add(new PivotItem { Header = "排版", Content = ReadingSettings(reader: true) });
         readerSettings.Items.Add(new PivotItem { Header = "朗读", Content = Ui.Scroll(SpeechSettings(reader: true)) });
-        var typography = new Button { Content = "阅读设置", Flyout = new Flyout { Content = readerSettings, Placement = Microsoft.UI.Xaml.Controls.Primitives.FlyoutPlacementMode.BottomEdgeAlignedRight } };
+        readerSettingsPane = ReaderPane("阅读设置", readerSettings);
+        var typography = Button("排版", ToggleReaderSettings);
+        AutomationProperties.SetName(typography, "阅读设置");
         readerSpeech = ActionButton("朗读", ToggleSpeechAsync);
-        readerFullScreen = Button(AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen ? "退出全屏" : "全屏", ToggleFullScreen);
-        readerTop = Ui.Columns("Auto,*,Auto", ActionButton("返回书架", CloseReaderAsync), readerTitle, Ui.AdaptiveCommands(directory, bookmark, readerSwitch, typography, readerSpeech, readerFullScreen));
+        readerSwitch = new MenuFlyoutItem { Text = "换源" };
+        readerSwitch.Click += (_, _) => { if (readerBook is { } book) _ = RunAsync(() => SwitchSourceAsync(book)); };
+        readerFullScreen = new MenuFlyoutItem { Text = AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen ? "退出全屏" : "全屏" };
+        readerFullScreen.Click += (_, _) => ToggleFullScreen();
+        var actions = new MenuFlyout { Items = { readerSwitch, readerFullScreen } };
+        var more = new Button { Content = new FontIcon { Glyph = "\uE712", FontSize = 16 }, Flyout = actions };
+        AutomationProperties.SetName(more, "更多阅读操作");
+        ToolTipService.SetToolTip(more, "更多阅读操作");
+        readerTop = Ui.Columns("Auto,*,Auto", ActionButton("返回书架", CloseReaderAsync), readerTitle,
+            Ui.AdaptiveCommands(directory, bookmark, typography, readerSpeech, more));
         readerTop.Margin = new(16, 8, 16, 6);
         readerPrevious = ActionButton("上一章", () => StepReaderAsync(-1));
         readerNext = ActionButton("下一章", () => StepReaderAsync(1));
@@ -60,7 +72,8 @@ public sealed partial class MainWindow
         readerBody.Children.Add(readerError);
         var content = Ui.Rows("Auto,*,Auto", readerTop, readerBody, readerBottom);
         content.RowSpacing = 0;
-        readerSplit = new SplitView { DisplayMode = SplitViewDisplayMode.Overlay, PanePlacement = SplitViewPanePlacement.Left, OpenPaneLength = 318, Content = content };
+        // Overlay keeps the WebView viewport at exactly the same size when the pane opens.
+        readerSplit = new SplitView { DisplayMode = SplitViewDisplayMode.Overlay, PanePlacement = SplitViewPanePlacement.Right, OpenPaneLength = 344, Content = content };
         readerSurface = new Grid();
         readerSurface.Children.Add(readerSplit);
         Grid.SetRow(readerSurface, 2);
@@ -100,9 +113,15 @@ public sealed partial class MainWindow
     private async Task OpenReaderAsync(JsonObject book, int? chapter = null, double? percent = null)
     {
         if (readerBook is null)
+        {
             readerWasFullScreen = AppWindow.Presenter.Kind == AppWindowPresenterKind.FullScreen;
+            returnToShelf = captureShelfPosition?.Invoke(book);
+        }
         if (readerBook is not null && !ReferenceEquals(readerBook, book))
+        {
+            await CaptureReadingPositionAsync();
             await FlushReadingProgressAsync();
+        }
         StopSpeech();
         ResetRenderedChapters();
         var session = ++readerSession;
@@ -115,6 +134,7 @@ public sealed partial class MainWindow
         appending = false;
         readingIndex = 0;
         readingPercent = 0;
+        readingAnchor = null;
         readerBusy = true;
         var saved = store.Progress[book.S("id")];
         var progress = percent ?? (chapter is null ? saved.D("pct") : 0);
@@ -139,14 +159,17 @@ public sealed partial class MainWindow
                 await RefreshTocAsync(book);
             if (session != readerSession) return;
             readerChapters = book["chapters"].Objects().ToArray();
-            if (chapter is null && saved is not null && book.S("kind") != "local")
+            if (chapter is null && saved is not null && book.S("kind") != "local" && readerChapters.Length > 0)
             {
                 var savedIndex = Math.Clamp(saved.I("ci"), 0, readerChapters.Length - 1);
                 if (saved.S("title") is { Length: > 0 } title && title != readerChapters[savedIndex].S("title"))
                     requestedChapter = await ChapterMatchAsync((JsonArray)book["chapters"]!, title, savedIndex, book.I("total"));
                 else requestedChapter = savedIndex;
             }
-            if (session == readerSession) await ReadChapterAsync(requestedChapter, progress);
+            var anchor = chapter is null && percent is null && saved is JsonObject savedPosition &&
+                requestedChapter >= 0 && requestedChapter < readerChapters.Length &&
+                readerChapters[requestedChapter].S("title") == saved.S("title") ? savedPosition["anchor"] as JsonObject : null;
+            if (session == readerSession) await ReadChapterAsync(requestedChapter, progress, anchor);
         }
         catch (Exception e)
         {
@@ -238,7 +261,7 @@ public sealed partial class MainWindow
         public Uri Url { get; } = url;
     }
 
-    private async Task ReadChapterAsync(int index, double percent = 0)
+    private async Task ReadChapterAsync(int index, double percent = 0, JsonObject? anchor = null)
     {
         var book = readerBook;
         if (book is null || readerChapters.Length == 0) throw new IOException("目录为空，请重试或换源");
@@ -258,17 +281,19 @@ public sealed partial class MainWindow
             if (session != readerSession) return;
             index = readingIndex = requestedChapter = resolvedIndex;
             readingPercent = Math.Clamp(percent, 0, 1);
+            readingAnchor = anchor;
             readingToken = Guid.NewGuid().ToString("N");
             var display = ChapterPayload(index, chapter, paragraphs);
             readerWeb!.Visibility = Visibility.Visible;
             readerError!.Visibility = Visibility.Collapsed;
             UpdateReaderControls();
-            await ReaderScriptAsync("set", display, ReadingAppearance(), JsonValue.Create(readingToken), JsonValue.Create(readingPercent));
+            await ReaderScriptAsync("set", display, ReadingAppearance(), JsonValue.Create(readingToken), JsonValue.Create(readingPercent), anchor);
             if (session != readerSession) return;
             readerWeb.Opacity = 1;
             progressDirty = true;
             readerBusy = false;
-            await ReaderScriptAsync("report");
+            await CaptureReadingPositionAsync(requestNext: true);
+            if (session != readerSession) return;
             await FlushReadingProgressAsync();
         }
         catch (Exception e)
@@ -276,7 +301,7 @@ public sealed partial class MainWindow
             if (session != readerSession) return;
             var originalPage = (e as RenderedChapterException)?.Url;
             readingToken = originalPage is null ? displayedToken : "";
-            ShowReaderError(e.Message, () => ReadChapterAsync(index, percent), originalPage);
+            ShowReaderError(e.Message, () => ReadChapterAsync(index, percent, anchor), originalPage);
         }
         finally { if (session == readerSession) readerBusy = false; }
     }
@@ -285,18 +310,35 @@ public sealed partial class MainWindow
     private async Task<string> ReaderScriptAsync(string function, params JsonNode?[] args) =>
         await readerWeb!.ExecuteScriptAsync($"window.reader.{function}({string.Join(",", args.Select(a => a?.ToJsonString() ?? "null"))})");
 
+    private void ApplyReadingPosition(JsonNode message)
+    {
+        var index = message.I("ci", readingIndex);
+        if (index < 0 || index >= readerChapters.Length) return;
+        var percent = Math.Clamp(message.D("pct"), 0, 1);
+        var anchor = message["anchor"] as JsonObject;
+        if (index != readingIndex || Math.Abs(readingPercent - percent) > 0.0001 || !JsonNode.DeepEquals(readingAnchor, anchor))
+        {
+            readingIndex = index;
+            readingPercent = percent;
+            readingAnchor = anchor;
+            progressDirty = true;
+        }
+        UpdateReaderControls(message.I("page"), message.I("pages"));
+    }
+
+    private async Task CaptureReadingPositionAsync(bool requestNext = false)
+    {
+        if (readerBook is null || readerBusy || readingToken == "" || readerWeb?.Visibility != Visibility.Visible) return;
+        var token = readingToken;
+        var raw = await ReaderScriptAsync("position", JsonValue.Create(requestNext));
+        if (readingToken == token && !readerBusy && JsonNode.Parse(raw) is JsonObject position) ApplyReadingPosition(position);
+    }
+
     private void HandleReaderMessage(JsonNode message)
     {
         switch (message.S("type"))
         {
-            case "progress" when !readerBusy:
-                var index = message.I("ci", readingIndex);
-                if (index < 0 || index >= readerChapters.Length) return;
-                var percent = Math.Clamp(message.D("pct"), 0, 1);
-                if (index != readingIndex || Math.Abs(readingPercent - percent) > 0.0001)
-                { readingIndex = index; readingPercent = percent; progressDirty = true; }
-                UpdateReaderControls(message.I("page"), message.I("pages"));
-                break;
+            case "progress" when !readerBusy: ApplyReadingPosition(message); break;
             case "needNext" when !appending && !prefetchFailed: _ = RunAsync(() => AppendChapterAsync(message.I("ci") + 1)); break;
             case "retryNext": prefetchFailed = false; _ = RunAsync(() => AppendChapterAsync(message.I("ci") + 1)); break;
             case "chapter" when !readerBusy: _ = RunAsync(() => ReadChapterAsync(readingIndex + Math.Sign(message.I("direction")))); break;
@@ -391,8 +433,36 @@ public sealed partial class MainWindow
     private void ToggleDirectory()
     {
         if (readerSplit is null || readerBook is null) return;
-        if (readerSplit.IsPaneOpen) { readerSplit.IsPaneOpen = false; return; }
-        var tabs = new Pivot { Margin = new(8, 4, 8, 0) };
+        if (readerSplit.IsPaneOpen && !ReferenceEquals(readerSplit.Pane, readerSettingsPane))
+        { readerSplit.IsPaneOpen = false; return; }
+        ShowDirectory();
+    }
+
+    private void ToggleReaderSettings()
+    {
+        if (readerSplit is null || readerSettingsPane is null || readerBook is null) return;
+        if (readerSplit.IsPaneOpen && ReferenceEquals(readerSplit.Pane, readerSettingsPane))
+        { readerSplit.IsPaneOpen = false; return; }
+        readerSplit.Pane = readerSettingsPane;
+        readerSplit.IsPaneOpen = true;
+    }
+
+    private FrameworkElement ReaderPane(string title, UIElement body)
+    {
+        var close = Button("关闭", () => readerSplit!.IsPaneOpen = false);
+        AutomationProperties.SetName(close, "关闭" + title);
+        var heading = Ui.Text(title, 20);
+        heading.FontWeight = Microsoft.UI.Text.FontWeights.SemiBold;
+        var pane = Ui.Rows("Auto,*", Ui.Columns("*,Auto", heading, close), body);
+        pane.Padding = new(16, 12, 16, 12);
+        pane.RowSpacing = 10;
+        return pane;
+    }
+
+    private void ShowDirectory(int selectedTab = 0)
+    {
+        if (readerSplit is null || readerBook is null) return;
+        var tabs = new Pivot();
         var titles = readerChapters.Select(c => c.S("title")).ToArray();
         var toc = new ListView { ItemsSource = titles, SelectedIndex = titles.Length > readingIndex ? readingIndex : -1, IsItemClickEnabled = true };
         toc.ItemClick += (_, e) =>
@@ -425,14 +495,13 @@ public sealed partial class MainWindow
             {
                 store.State["bookmarks"]!.AsArray().Remove(row.Bookmark);
                 await store.SaveAsync();
-                readerSplit.IsPaneOpen = false;
-                ToggleDirectory();
-                if (readerSplit.Pane is Pivot pivot) pivot.SelectedIndex = 1;
+                ShowDirectory(1);
             });
             e.ItemContainer.ContextFlyout = menu;
         };
         tabs.Items.Add(new PivotItem { Header = "书签", Content = items.Length == 0 ? Ui.Text("还没有书签", 14, true) : bookmarks });
-        readerSplit.Pane = tabs;
+        tabs.SelectedIndex = selectedTab;
+        readerSplit.Pane = ReaderPane("章节导航", tabs);
         readerSplit.IsPaneOpen = true;
     }
 
@@ -458,7 +527,9 @@ public sealed partial class MainWindow
     {
         if (!progressDirty || readerBook is null || readerBook.Parent is null || readingIndex >= readerChapters.Length) return;
         progressDirty = false;
-        store.Progress[readerBook.S("id")] = NewProgress(readingIndex, readerChapters[readingIndex].S("title"), readingPercent);
+        var progress = NewProgress(readingIndex, readerChapters[readingIndex].S("title"), readingPercent);
+        if (readingAnchor is not null) progress["anchor"] = readingAnchor.DeepClone();
+        store.Progress[readerBook.S("id")] = progress;
         try { await store.SaveAsync(); }
         catch { progressDirty = true; throw; }
     }
@@ -466,6 +537,7 @@ public sealed partial class MainWindow
     {
         if (readerBook is null) return;
         StopSpeech();
+        await CaptureReadingPositionAsync();
         await FlushReadingProgressAsync();
         ++readerSession;
         ResetRenderedChapters();
@@ -477,7 +549,10 @@ public sealed partial class MainWindow
         readerSurface!.Visibility = Visibility.Collapsed;
         SetFullScreen(readerWasFullScreen);
         navigation.Visibility = Visibility.Visible;
-        SelectPage("shelf");
+        var restore = returnToShelf;
+        returnToShelf = null;
+        if (restore is null) SelectPage("shelf");
+        else restore();
     }
 
     private JsonObject ReadingAppearance() => new()
@@ -514,7 +589,11 @@ public sealed partial class MainWindow
     private async Task RefreshReaderAppearanceAsync(bool modeChanged)
     {
         if (readerBook is null || readingToken == "") return;
-        if (modeChanged) await ReadChapterAsync(readingIndex, readingPercent);
+        if (modeChanged)
+        {
+            await CaptureReadingPositionAsync();
+            await ReadChapterAsync(readingIndex, readingPercent, readingAnchor);
+        }
         else await ReaderScriptAsync("settings", ReadingAppearance());
     }
 }
